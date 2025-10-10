@@ -48,16 +48,16 @@ def report_error(e):
 def main():
     NODE_RATE = 200
 
-    imu1 = MicroStrainIMU("195772", 921600)
-    imu2 = MicroStrainIMU("195778", 921600)
+    shank_r_imu = MicroStrainIMU("195778", 921600)
+    thigh_r_imu = MicroStrainIMU("195775", 921600)
 
     try:
-        imu1.configure_ESTFLTER_imu(NODE_RATE)
-        imu2.configure_ESTFLTER_imu(NODE_RATE)
+        shank_r_imu.configure_ESTFLTER_imu(NODE_RATE)
+        thigh_r_imu.configure_ESTFLTER_imu(NODE_RATE)
     except Exception as e:
         report_error(e)
-        imu1.set_to_idle()
-        imu2.set_to_idle()
+        shank_r_imu.set_to_idle()
+        thigh_r_imu.set_to_idle()
         return
     
     
@@ -74,8 +74,8 @@ def main():
     transform_imu_to_knee_inv = transform_imu_to_knee.inv()
 
     # Initial quaternions (zero reference)
-    imu1_quat0 = R.from_quat(get_estfilter_data(imu1), scalar_first=True)
-    imu2_quat0 = R.from_quat(get_estfilter_data(imu2), scalar_first=True)
+    shank_r_quat0 = R.from_quat(get_estfilter_data(shank_r_imu), scalar_first=True)
+    thigh_r_quat0 = R.from_quat(get_estfilter_data(thigh_r_imu), scalar_first=True)
 
     # GUI
     gui = nimble.NimbleGUI(world)
@@ -104,29 +104,33 @@ def main():
 
     try:
         while True:
-            quat1 = get_estfilter_data(imu1)
-            quat2 = get_estfilter_data(imu2)
+            shank_r_quat_data = get_estfilter_data(shank_r_imu)
+            quat2 = get_estfilter_data(thigh_r_imu)
 
-            r1 = R.from_quat(quat1, scalar_first=True)
+            shank_r_quat = R.from_quat(shank_r_quat_data, scalar_first=True)
             r2 = R.from_quat(quat2, scalar_first=True)
 
             # Zero relative rotation
-            r1_zeroed = imu1_quat0.inv() * r1
-            r2_zeroed = imu2_quat0.inv() * r2
+            shank_r_quat_zeroed = shank_r_quat0.inv() * shank_r_quat
+            thigh_r_quat_zeroed = thigh_r_quat0.inv() * r2
+            
+            
+            # Shank relative to thigh
+            shank_r_quat_rel = thigh_r_quat_zeroed.inv() * shank_r_quat_zeroed
 
             # Transform to joint frame
-            r1_joint = transform_imu_to_knee * r1_zeroed * transform_imu_to_knee_inv
-            r2_joint = transform_imu_to_knee * r2_zeroed * transform_imu_to_knee_inv
+            shank_r_quat_joint_frame = transform_imu_to_knee * shank_r_quat_rel * transform_imu_to_knee_inv
+            thigh_r_quat_joint = transform_imu_to_knee * thigh_r_quat_zeroed * transform_imu_to_knee_inv
 
-            axis1, theta1 = safe_axis_angle(r1_joint.as_rotvec())
-            axis2, theta2 = safe_axis_angle(r2_joint.as_rotvec())
+            shank_r_axis, shank_r_theta = safe_axis_angle(shank_r_quat_joint_frame.as_rotvec())
+            thigh_r_axis, thigh_r_theta = safe_axis_angle(thigh_r_quat_joint.as_rotvec())
 
             # Compute joint angles
             pos = skeleton.getPositions()
-            pos[9] = np.dot(axis1, joint_axes["knee"]) * theta1
-            pos[6] = np.dot(axis2, joint_axes["hip_z"]) * theta2
-            pos[7] = np.dot(axis2, joint_axes["hip_x"]) * theta2
-            pos[8] = np.dot(axis2, joint_axes["hip_y"]) * theta2
+            pos[9] = np.dot(shank_r_axis, joint_axes["knee"]) * shank_r_theta
+            pos[6] = np.dot(thigh_r_axis, joint_axes["hip_z"]) * thigh_r_theta
+            pos[7] = np.dot(thigh_r_axis, joint_axes["hip_x"]) * thigh_r_theta
+            pos[8] = np.dot(thigh_r_axis, joint_axes["hip_y"]) * thigh_r_theta
             skeleton.setPositions(pos)
 
             gui.nativeAPI().renderWorld(world)
@@ -144,8 +148,8 @@ def main():
         report_error(e)
     finally:
         print("Ending Stream.")
-        imu1.set_to_idle()
-        imu2.set_to_idle()
+        shank_r_imu.set_to_idle()
+        thigh_r_imu.set_to_idle()
 
 
 if __name__ == "__main__":
