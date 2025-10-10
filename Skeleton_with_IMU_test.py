@@ -1,215 +1,152 @@
 import time
 import sys
-import os
-from Microstrain import MicroStrainIMU
-import threading
-import nimblephysics as nimble
 import numpy as np
-import torch
+from Microstrain import MicroStrainIMU
+import nimblephysics as nimble
 from scipy.spatial.transform import Rotation as R
 from typing import List, Tuple
+# ------------------------------------------------------------------
+# Utility functions
+# ------------------------------------------------------------------
+
+def rotation_matrix_x(theta):
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+
+def rotation_matrix_y(theta):
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+
+def rotation_matrix_z(theta):
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+
+def safe_axis_angle(rotvec: np.ndarray) -> Tuple[np.ndarray, float]:
+    theta = np.linalg.norm(rotvec)
+    if theta < 1e-8:
+        return np.zeros(3), 0.0
+    return rotvec / theta, theta
+
+def get_estfilter_data(imu):
+    data = imu.get_ESTFILTER_data(20, 0)
+    quat = np.array([
+        data[10].as_floatAt(0),
+        data[10].as_floatAt(1),
+        data[10].as_floatAt(2),
+        data[10].as_floatAt(3)
+    ])
+    return quat
+
+def report_error(e):
+    exc_type, _, tb = sys.exc_info()
+    print(f"[{exc_type.__name__}] {e} (line {tb.tb_lineno})")
 
 
-def get_R_x(theta):
-    R = np.array([[1, 0, 0],
-                  [0, np.cos(theta), -np.sin(theta)],
-                  [0, np.sin(theta),  np.cos(theta)]])
-    return R
-
-def get_R_y(theta):
-    R = np.array([[np.cos(theta), 0, np.sin(theta)],
-                  [0, 1, 0],
-                  [-np.sin(theta), 0,  np.cos(theta)]])
-    return R
-
-def get_R_z(theta):
-    R = np.array([[np.cos(theta), -np.sin(theta), 0],
-                  [np.sin(theta), np.cos(theta), 0],
-                  [0, 0, 1]])
-    return R
-
-
+# ------------------------------------------------------------------
+# Main
+# ------------------------------------------------------------------
 def main():
-    
-    # Configure the IMU's
-    # imu = MicroStrainIMU("/dev/ttyACM0", 921600)
-    imu = MicroStrainIMU("195772", 921600)
-    imu2 = MicroStrainIMU("195778", 921600)
     NODE_RATE = 200
-    
-    # 1. Set up the simulation world
-    world = nimble.simulation.World()
-    world.setGravity([0, 0, 0]) # No gravity for this simple viz
-    
-    
-    rajagopal_opensim: nimble.biomechanics.OpenSimFile = nimble.RajagopalHumanBodyModel()
-    skeleton: nimble.dynamics.Skeleton = rajagopal_opensim.skeleton
-    world.addSkeleton(skeleton)
-    
-    
-    
-    ## List of all the joints
-    # for i in range(skeleton.getNumBodyNodes()):
-    #     print(f"{i} : {skeleton.getBodyNode(i).getName()}")
-    
-    
-    for i in range(skeleton.getNumDofs()):
-        
-        print(f"{i}: {skeleton.getDofByIndex(i).getName()}")
-    
+
+    imu1 = MicroStrainIMU("195772", 921600)
+    imu2 = MicroStrainIMU("195778", 921600)
+
     try:
-        imu.configure_ESTFLTER_imu(200)
-        imu2.configure_ESTFLTER_imu(200)
+        imu1.configure_ESTFLTER_imu(NODE_RATE)
+        imu2.configure_ESTFLTER_imu(NODE_RATE)
     except Exception as e:
-        exc_type, exc_obj, tb = sys.exc_info()
-        line_number = tb.tb_lineno
-        print(e)
-        print(exc_type.__name__)
-        print(f'Error Ending Stream on line {line_number}')
-        imu.set_to_idle()
+        report_error(e)
+        imu1.set_to_idle()
         imu2.set_to_idle()
-        
-    time_initial = time.perf_counter()
-    
-    imu_timestamp, imu_accel_x, imu_accel_y, imu_accel_z, imu_gyro_x, imu_gyro_y, imu_gyro_z, imu_mag_x, imu_mag_y, imu_mag_z, imu_quat, imu_filt_quat = (imu.get_ESTFILTER_data(20, 0))
-    imu2_timestamp, imu2_accel_x, imu2_accel_y, imu2_accel_z, imu2_gyro_x, imu2_gyro_y, imu2_gyro_z, imu2_mag_x, imu2_mag_y, imu2_mag_z, imu2_quat, imu2_filt_quat = (imu2.get_ESTFILTER_data(20, 0))
-    # ############### Quaternion Streaming ###########################
-    # Zeroing Quaternion
-    imu_filt_quat_np = np.array([imu_filt_quat.as_floatAt(0), imu_filt_quat.as_floatAt(1), imu_filt_quat.as_floatAt(2), imu_filt_quat.as_floatAt(3)])
-    imu_quat_0 = R.from_quat(imu_filt_quat_np, scalar_first=True)
-   
-    imu2_filt_quat_np = np.array([imu2_filt_quat.as_floatAt(0), imu2_filt_quat.as_floatAt(1), imu2_filt_quat.as_floatAt(2), imu2_filt_quat.as_floatAt(3)])
-    imu2_quat_0 = R.from_quat(imu2_filt_quat_np, scalar_first=True)    
+        return
     
     
-    # transform from IMU frame to Knee Joint frame
-    transform_imu_2_knee = R.from_matrix( get_R_z(-np.pi/2) @ get_R_x(np.pi) )
-    
-    # Set up the GUI
-    gui: nimble.NimbleGUI = nimble.NimbleGUI(world)
+    # Nimble world
+    world = nimble.simulation.World()
+    world.setGravity([0, 0, 0])
+
+    opensim_model = nimble.RajagopalHumanBodyModel()
+    skeleton = opensim_model.skeleton
+    world.addSkeleton(skeleton)
+
+    # Precompute transforms
+    transform_imu_to_knee = R.from_matrix(rotation_matrix_z(-np.pi / 2) @ rotation_matrix_x(np.pi))
+    transform_imu_to_knee_inv = transform_imu_to_knee.inv()
+
+    # Initial quaternions (zero reference)
+    imu1_quat0 = R.from_quat(get_estfilter_data(imu1), scalar_first=True)
+    imu2_quat0 = R.from_quat(get_estfilter_data(imu2), scalar_first=True)
+
+    # GUI
+    gui = nimble.NimbleGUI(world)
     gui.serve(8080)
     gui.nativeAPI().renderWorld(world)
     gui.nativeAPI().renderBasis(scale=0.5)
-    
+
     tibia_r_node = skeleton.getBodyNode("tibia_r")
-    
-    # Convert the right hand rotation matrix to euler angles
-    tibia_r_world_transform: nimble.math.Isometry3 = tibia_r_node.getWorldTransform()
-    
-    tibia_r_pos = tibia_r_world_transform.translation()
-    tibia_r_euler_angles = nimble.math.matrixToEulerXYZ(tibia_r_world_transform.rotation())
-    
-    
-    gui.nativeAPI().renderBasis(scale=0.3, pos=tibia_r_pos, euler=tibia_r_euler_angles, prefix="tibia_basis")   
-    
-    
-    
-    
+    tibia_tf = tibia_r_node.getWorldTransform()
+    gui.nativeAPI().renderBasis(
+        scale=0.3,
+        pos=tibia_tf.translation(),
+        euler=nimble.math.matrixToEulerXYZ(tibia_tf.rotation()),
+        prefix="tibia_basis"
+    )
 
-    while True:
-        try:
-            cur_time = time.perf_counter()
-            device_time = cur_time - time_initial
-
-            imu_timestamp, imu_accel_x, imu_accel_y, imu_accel_z, imu_gyro_x, imu_gyro_y, imu_gyro_z, imu_mag_x, imu_mag_y, imu_mag_z, imu_quat, imu_filt_quat = (imu.get_ESTFILTER_data(20, 0))
-            imu2_timestamp, imu2_accel_x, imu2_accel_y, imu2_accel_z, imu2_gyro_x, imu2_gyro_y, imu2_gyro_z, imu2_mag_x, imu2_mag_y, imu2_mag_z, imu2_quat, imu2_filt_quat = (imu2.get_ESTFILTER_data(20, 0))
-            
-            ############### Quaternion Streaming ###########################
-            imu_filt_quat_np = np.array([imu_filt_quat.as_floatAt(0), imu_filt_quat.as_floatAt(1), imu_filt_quat.as_floatAt(2), imu_filt_quat.as_floatAt(3)])
-            imu2_filt_quat_np = np.array([imu2_filt_quat.as_floatAt(0), imu2_filt_quat.as_floatAt(1), imu2_filt_quat.as_floatAt(2), imu2_filt_quat.as_floatAt(3)])
-            
-            # Convert the quat to rotation
-            imu_filt_quat_rotation = R.from_quat(imu_filt_quat_np, scalar_first=True)
-            imu2_filt_quat_rotation = R.from_quat(imu2_filt_quat_np, scalar_first=True)
-            
-            # zero the quat to starting orientation
-            imu_filt_quat_zeroed =   imu_quat_0.inv() * imu_filt_quat_rotation 
-            imu2_filt_quat_zeroed =   imu2_quat_0.inv() * imu2_filt_quat_rotation 
-            
-            
-            
-            # Transform from imu frame to knee joint frame
-            imu_rotvec_joint_frame = transform_imu_2_knee * imu_filt_quat_zeroed * transform_imu_2_knee.inv()
-            imu2_rotvec_joint_frame = transform_imu_2_knee * imu2_filt_quat_zeroed * transform_imu_2_knee.inv()
-            
-            
-            # Convert to axis-angle (rotation vector) representation
-            imu_rotvec = imu_rotvec_joint_frame.as_rotvec()  # 3D vector: axis * angle in radians
-            imu2_rotvec = imu2_rotvec_joint_frame.as_rotvec()  # 3D vector: axis * angle in radians
-            
-            
-            theta = np.linalg.norm(np.array(imu_rotvec))
-            theta2 = np.linalg.norm(np.array(imu2_rotvec))
-            if theta < 1e-8:
-                axis = np.zeros(3)
-            else:
-                axis = imu_rotvec / theta
-                
-            if theta2 < 1e-8:
-                axis2 = np.zeros(3)
-            else:
-                axis2 = imu2_rotvec / theta2
-        
-                
-            joint_knee_local_axis = [0,0,-1]
-            joint_hip_local_x_axis = [-1,0,0]
-            joint_hip_local_y_axis = [0,-1,0]
-            joint_hip_local_z_axis = [0,0,1]
-            
+    joint_axes = {
+        "knee": np.array([0, 0, -1]),
+        "hip_x": np.array([-1, 0, 0]),
+        "hip_y": np.array([0, -1, 0]),
+        "hip_z": np.array([0, 0, 1]),
+    }
     
     
-    
-            # Assuming axis is normalized
-            joint_knee_angle = np.dot(axis, joint_knee_local_axis) * theta
-    # 
-            positions = skeleton.getPositions()
-            positions[9] = joint_knee_angle
-            
-            positions[6] = np.dot(axis2, joint_hip_local_z_axis) * theta2
-            positions[7] = np.dot(axis2, joint_hip_local_x_axis) * theta2
-            positions[8] = np.dot(axis2, joint_hip_local_y_axis) * theta2
-            skeleton.setPositions(positions)
-
-            
-            
-            gui.nativeAPI().renderWorld(world)
-
-        
-            time_diff = time.time() - cur_time
-            if time_diff < (1/NODE_RATE - 0.001):
-                time.sleep((1/NODE_RATE- 0.001) - time_diff)
-
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            exc_type, exc_obj, tb = sys.exc_info()
-            line_number = tb.tb_lineno
-            print(e)
-            print(exc_type.__name__)
-            print(f'Error Ending Stream on line {line_number}')
-            imu.set_to_idle()
-            imu2.set_to_idle()
-            break
-
-
+    t_prev = time.perf_counter()
 
     try:
-        print('Ending Stream')
-        imu.set_to_idle()
-        imu2.set_to_idle()
-    except Exception as e:
-       # pass
-        exc_type, exc_obj, tb = sys.exc_info()
-        line_number = tb.tb_lineno
-        print(e)
-        print(exc_type.__name__)
-        print(f'Error Ending Stream on line {line_number}')
-    
-    
+        while True:
+            quat1 = get_estfilter_data(imu1)
+            quat2 = get_estfilter_data(imu2)
 
+            r1 = R.from_quat(quat1, scalar_first=True)
+            r2 = R.from_quat(quat2, scalar_first=True)
+
+            # Zero relative rotation
+            r1_zeroed = imu1_quat0.inv() * r1
+            r2_zeroed = imu2_quat0.inv() * r2
+
+            # Transform to joint frame
+            r1_joint = transform_imu_to_knee * r1_zeroed * transform_imu_to_knee_inv
+            r2_joint = transform_imu_to_knee * r2_zeroed * transform_imu_to_knee_inv
+
+            axis1, theta1 = safe_axis_angle(r1_joint.as_rotvec())
+            axis2, theta2 = safe_axis_angle(r2_joint.as_rotvec())
+
+            # Compute joint angles
+            pos = skeleton.getPositions()
+            pos[9] = np.dot(axis1, joint_axes["knee"]) * theta1
+            pos[6] = np.dot(axis2, joint_axes["hip_z"]) * theta2
+            pos[7] = np.dot(axis2, joint_axes["hip_x"]) * theta2
+            pos[8] = np.dot(axis2, joint_axes["hip_y"]) * theta2
+            skeleton.setPositions(pos)
+
+            gui.nativeAPI().renderWorld(world)
+
+            # Simple rate limiter
+            elapsed = time.perf_counter() - t_prev
+            sleep_time = (1.0 / NODE_RATE) - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            t_prev = time.perf_counter()
+
+    except KeyboardInterrupt:
+        print("\nTerminated by user.")
+    except Exception as e:
+        report_error(e)
+    finally:
+        print("Ending Stream.")
+        imu1.set_to_idle()
+        imu2.set_to_idle()
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-    
