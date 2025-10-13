@@ -13,6 +13,10 @@ target: np.ndarray = np.array([0.5, 0.5, 0.5])
 gui = nimble.NimbleGUI()
 gui.serve(8080)
 
+# Print Position Index of the degrees of freedom
+for i in range(skeleton.getNumDofs()):
+  print(f"{i} : {skeleton.getDofByIndex(i).getName()}")
+  
 # Get an initial guess for positions
 positions: np.ndarray = skeleton.getPositions()
 

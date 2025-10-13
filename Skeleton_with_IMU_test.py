@@ -48,16 +48,26 @@ def report_error(e):
 def main():
     NODE_RATE = 200
 
-    shank_r_imu = MicroStrainIMU("195778", 921600)
-    thigh_r_imu = MicroStrainIMU("195775", 921600)
+    shank_r_imu = MicroStrainIMU("195772", 921600)
+    thigh_r_imu = MicroStrainIMU("195778", 921600)
+    
+    thigh_l_imu = MicroStrainIMU("195775", 921600)
+    shank_l_imu = MicroStrainIMU("196864", 921600)
 
     try:
         shank_r_imu.configure_ESTFLTER_imu(NODE_RATE)
         thigh_r_imu.configure_ESTFLTER_imu(NODE_RATE)
+        
+        thigh_l_imu.configure_ESTFLTER_imu(NODE_RATE)
+        shank_l_imu.configure_ESTFLTER_imu(NODE_RATE)
     except Exception as e:
         report_error(e)
         shank_r_imu.set_to_idle()
         thigh_r_imu.set_to_idle()
+        
+        thigh_l_imu.set_to_idle()
+        shank_l_imu.set_to_idle()
+        
         return
     
     
@@ -70,12 +80,18 @@ def main():
     world.addSkeleton(skeleton)
 
     # Precompute transforms
-    transform_imu_to_knee = R.from_matrix(rotation_matrix_z(-np.pi / 2) @ rotation_matrix_x(np.pi))
-    transform_imu_to_knee_inv = transform_imu_to_knee.inv()
+    transform_imu_to_right = R.from_matrix(rotation_matrix_z(-np.pi / 2) @ rotation_matrix_x(np.pi))
+    transform_imu_to_right_inv = transform_imu_to_right.inv()
+    
+    transform_imu_to_left = R.from_matrix(rotation_matrix_z(-np.pi / 2))
+    transform_imu_left_inv = transform_imu_to_left.inv()
 
     # Initial quaternions (zero reference)
     shank_r_quat0 = R.from_quat(get_estfilter_data(shank_r_imu), scalar_first=True)
     thigh_r_quat0 = R.from_quat(get_estfilter_data(thigh_r_imu), scalar_first=True)
+    
+    shank_l_quat0 = R.from_quat(get_estfilter_data(shank_l_imu), scalar_first=True)
+    thigh_l_quat0 = R.from_quat(get_estfilter_data(thigh_l_imu), scalar_first=True)
 
     # GUI
     gui = nimble.NimbleGUI(world)
@@ -83,7 +99,7 @@ def main():
     gui.nativeAPI().renderWorld(world)
     gui.nativeAPI().renderBasis(scale=0.5)
 
-    tibia_r_node = skeleton.getBodyNode("tibia_r")
+    tibia_r_node = skeleton.getBodyNode("tibia_l")
     tibia_tf = tibia_r_node.getWorldTransform()
     gui.nativeAPI().renderBasis(
         scale=0.3,
@@ -97,6 +113,8 @@ def main():
         "hip_x": np.array([-1, 0, 0]),
         "hip_y": np.array([0, -1, 0]),
         "hip_z": np.array([0, 0, 1]),
+        "l_hip_x": np.array([1, 0, 0]),
+        "l_hip_y": np.array([0, 1, 0]),
     }
     
     
@@ -104,33 +122,63 @@ def main():
 
     try:
         while True:
+            
+            # Get Right Limb data
             shank_r_quat_data = get_estfilter_data(shank_r_imu)
-            quat2 = get_estfilter_data(thigh_r_imu)
-
+            thigh_r_quat_data = get_estfilter_data(thigh_r_imu)
+            
             shank_r_quat = R.from_quat(shank_r_quat_data, scalar_first=True)
-            r2 = R.from_quat(quat2, scalar_first=True)
+            thigh_r_quat = R.from_quat(thigh_r_quat_data, scalar_first=True)
+            
+            # Get Left limb data
+            shank_l_quat_data = get_estfilter_data(shank_l_imu)
+            thigh_l_quat_data = get_estfilter_data(thigh_l_imu)
+            
+            shank_l_quat = R.from_quat(shank_l_quat_data, scalar_first=True)
+            thigh_l_quat = R.from_quat(thigh_l_quat_data, scalar_first=True)            
 
             # Zero relative rotation
+            # Zero right side
             shank_r_quat_zeroed = shank_r_quat0.inv() * shank_r_quat
-            thigh_r_quat_zeroed = thigh_r_quat0.inv() * r2
+            thigh_r_quat_zeroed = thigh_r_quat0.inv() * thigh_r_quat
+            
+            # Zero Left Side
+            shank_l_quat_zeroed = shank_l_quat0.inv() * shank_l_quat
+            thigh_l_quat_zeroed = thigh_l_quat0.inv() * thigh_l_quat
             
             
             # Shank relative to thigh
             shank_r_quat_rel = thigh_r_quat_zeroed.inv() * shank_r_quat_zeroed
+            shank_l_quat_rel = thigh_l_quat_zeroed.inv() * shank_l_quat_zeroed
 
             # Transform to joint frame
-            shank_r_quat_joint_frame = transform_imu_to_knee * shank_r_quat_rel * transform_imu_to_knee_inv
-            thigh_r_quat_joint = transform_imu_to_knee * thigh_r_quat_zeroed * transform_imu_to_knee_inv
+            shank_r_quat_joint_frame = transform_imu_to_right * shank_r_quat_rel * transform_imu_to_right_inv
+            thigh_r_quat_joint_frame = transform_imu_to_right * thigh_r_quat_zeroed * transform_imu_to_right_inv
+            
+            thigh_l_quat_joint_frame = transform_imu_to_left * thigh_l_quat_zeroed * transform_imu_left_inv
+            shank_l_quat_joint_frame = transform_imu_to_left * shank_l_quat_rel * transform_imu_left_inv
 
             shank_r_axis, shank_r_theta = safe_axis_angle(shank_r_quat_joint_frame.as_rotvec())
-            thigh_r_axis, thigh_r_theta = safe_axis_angle(thigh_r_quat_joint.as_rotvec())
+            thigh_r_axis, thigh_r_theta = safe_axis_angle(thigh_r_quat_joint_frame.as_rotvec())
+            
+            shank_l_axis, shank_l_theta = safe_axis_angle(shank_l_quat_joint_frame.as_rotvec())
+            thigh_l_axis, thigh_l_theta = safe_axis_angle(thigh_l_quat_joint_frame.as_rotvec())
 
             # Compute joint angles
             pos = skeleton.getPositions()
+            
+            # Right Side
             pos[9] = np.dot(shank_r_axis, joint_axes["knee"]) * shank_r_theta
             pos[6] = np.dot(thigh_r_axis, joint_axes["hip_z"]) * thigh_r_theta
             pos[7] = np.dot(thigh_r_axis, joint_axes["hip_x"]) * thigh_r_theta
             pos[8] = np.dot(thigh_r_axis, joint_axes["hip_y"]) * thigh_r_theta
+            
+            # Left Side
+            pos[16] = np.dot(shank_l_axis, joint_axes["knee"]) * shank_l_theta
+            pos[13] = np.dot(thigh_l_axis, joint_axes["hip_z"]) * thigh_l_theta
+            pos[14] = np.dot(thigh_l_axis, joint_axes["l_hip_x"]) * thigh_l_theta
+            pos[15] = np.dot(thigh_l_axis, joint_axes["l_hip_y"]) * thigh_l_theta
+                       
             skeleton.setPositions(pos)
 
             gui.nativeAPI().renderWorld(world)
@@ -150,6 +198,9 @@ def main():
         print("Ending Stream.")
         shank_r_imu.set_to_idle()
         thigh_r_imu.set_to_idle()
+        
+        shank_l_imu.set_to_idle()
+        thigh_l_imu.set_to_idle()
 
 
 if __name__ == "__main__":
