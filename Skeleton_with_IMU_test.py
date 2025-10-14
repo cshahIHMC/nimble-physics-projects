@@ -47,14 +47,18 @@ def report_error(e):
 # ------------------------------------------------------------------
 def main():
     NODE_RATE = 200
+    
+    pelvis_imu = MicroStrainIMU("195772", 921600)
 
-    shank_r_imu = MicroStrainIMU("195772", 921600)
+    shank_r_imu = MicroStrainIMU("196864", 921600)
     thigh_r_imu = MicroStrainIMU("195778", 921600)
     
     thigh_l_imu = MicroStrainIMU("195775", 921600)
     shank_l_imu = MicroStrainIMU("196864", 921600)
 
     try:
+        pelvis_imu.configure_ESTFLTER_imu(NODE_RATE)
+        
         shank_r_imu.configure_ESTFLTER_imu(NODE_RATE)
         thigh_r_imu.configure_ESTFLTER_imu(NODE_RATE)
         
@@ -62,6 +66,8 @@ def main():
         shank_l_imu.configure_ESTFLTER_imu(NODE_RATE)
     except Exception as e:
         report_error(e)
+        pelvis_imu.set_to_idle()
+        
         shank_r_imu.set_to_idle()
         thigh_r_imu.set_to_idle()
         
@@ -80,13 +86,18 @@ def main():
     world.addSkeleton(skeleton)
 
     # Precompute transforms
-    transform_imu_to_right = R.from_matrix(rotation_matrix_z(-np.pi / 2) @ rotation_matrix_x(np.pi))
-    transform_imu_to_right_inv = transform_imu_to_right.inv()
+    transform_right_imu_to_world = R.from_matrix(rotation_matrix_z(-np.pi / 2) @ rotation_matrix_x(np.pi))
+    transform_right_imu_to_world_inv = transform_right_imu_to_world.inv()
     
-    transform_imu_to_left = R.from_matrix(rotation_matrix_z(-np.pi / 2))
-    transform_imu_left_inv = transform_imu_to_left.inv()
+    transform_left_imu_to_world = R.from_matrix(rotation_matrix_z(-np.pi / 2))
+    transform_left_imu_to_world_inv = transform_left_imu_to_world.inv()
+    
+    transform_pelvis_imu_to_world = R.from_matrix(rotation_matrix_x(-np.pi / 2) @ rotation_matrix_y(-np.pi/2))
+    transform_pelvis_imu_to_world_inv = transform_pelvis_imu_to_world.inv()
 
     # Initial quaternions (zero reference)
+    pelvis_quat0 = R.from_quat(get_estfilter_data(pelvis_imu), scalar_first=True)
+    
     shank_r_quat0 = R.from_quat(get_estfilter_data(shank_r_imu), scalar_first=True)
     thigh_r_quat0 = R.from_quat(get_estfilter_data(thigh_r_imu), scalar_first=True)
     
@@ -115,6 +126,9 @@ def main():
         "hip_z": np.array([0, 0, 1]),
         "l_hip_x": np.array([1, 0, 0]),
         "l_hip_y": np.array([0, 1, 0]),
+        "pelvis_x": np.array([-1, 0, 0]),
+        "pelvis_y": np.array([0, 1, 0]),
+        "pelvis_z": np.array([0, 0, -1])
     }
     
     
@@ -123,14 +137,19 @@ def main():
     try:
         while True:
             
-            # Get Right Limb data
+            # Get Pelvis data
+            pelvis_quat_data = get_estfilter_data(pelvis_imu)
+            pelvis_quat =  R.from_quat(pelvis_quat_data, scalar_first=True)
+            
+            
+            # # Get Right Limb data
             shank_r_quat_data = get_estfilter_data(shank_r_imu)
             thigh_r_quat_data = get_estfilter_data(thigh_r_imu)
             
             shank_r_quat = R.from_quat(shank_r_quat_data, scalar_first=True)
             thigh_r_quat = R.from_quat(thigh_r_quat_data, scalar_first=True)
             
-            # Get Left limb data
+            # # Get Left limb data
             shank_l_quat_data = get_estfilter_data(shank_l_imu)
             thigh_l_quat_data = get_estfilter_data(thigh_l_imu)
             
@@ -138,25 +157,35 @@ def main():
             thigh_l_quat = R.from_quat(thigh_l_quat_data, scalar_first=True)            
 
             # Zero relative rotation
-            # Zero right side
+            # Zero pelvis
+            pelvis_quat_zeroed = pelvis_quat0.inv() * pelvis_quat
+            
+            # # Zero right side
             shank_r_quat_zeroed = shank_r_quat0.inv() * shank_r_quat
             thigh_r_quat_zeroed = thigh_r_quat0.inv() * thigh_r_quat
             
-            # Zero Left Side
+            # # Zero Left Side
             shank_l_quat_zeroed = shank_l_quat0.inv() * shank_l_quat
             thigh_l_quat_zeroed = thigh_l_quat0.inv() * thigh_l_quat
             
             
-            # Shank relative to thigh
+            # # Shank relative to thigh
             shank_r_quat_rel = thigh_r_quat_zeroed.inv() * shank_r_quat_zeroed
             shank_l_quat_rel = thigh_l_quat_zeroed.inv() * shank_l_quat_zeroed
+            
+            thigh_r_quat_rel = (pelvis_quat0.inv() * thigh_r_quat0).inv() * (pelvis_quat.inv() * thigh_r_quat)
+            thigh_l_quat_rel = (pelvis_quat0.inv() * thigh_l_quat0).inv() * (pelvis_quat.inv() * thigh_l_quat)
 
             # Transform to joint frame
-            shank_r_quat_joint_frame = transform_imu_to_right * shank_r_quat_rel * transform_imu_to_right_inv
-            thigh_r_quat_joint_frame = transform_imu_to_right * thigh_r_quat_zeroed * transform_imu_to_right_inv
+            pelvis_quat_joint_frame = transform_pelvis_imu_to_world * pelvis_quat_zeroed * transform_pelvis_imu_to_world_inv
             
-            thigh_l_quat_joint_frame = transform_imu_to_left * thigh_l_quat_zeroed * transform_imu_left_inv
-            shank_l_quat_joint_frame = transform_imu_to_left * shank_l_quat_rel * transform_imu_left_inv
+            shank_r_quat_joint_frame = transform_right_imu_to_world * shank_r_quat_rel * transform_right_imu_to_world_inv
+            thigh_r_quat_joint_frame = transform_right_imu_to_world * thigh_r_quat_rel * transform_right_imu_to_world_inv
+            
+            thigh_l_quat_joint_frame = transform_left_imu_to_world * thigh_l_quat_rel * transform_left_imu_to_world_inv
+            shank_l_quat_joint_frame = transform_left_imu_to_world * shank_l_quat_rel * transform_left_imu_to_world_inv
+            
+            pelvis_axis, pelvis_theta = safe_axis_angle(pelvis_quat_joint_frame.as_rotvec())
 
             shank_r_axis, shank_r_theta = safe_axis_angle(shank_r_quat_joint_frame.as_rotvec())
             thigh_r_axis, thigh_r_theta = safe_axis_angle(thigh_r_quat_joint_frame.as_rotvec())
@@ -166,6 +195,12 @@ def main():
 
             # Compute joint angles
             pos = skeleton.getPositions()
+            
+            
+            # pelvis
+            pos[0] = np.dot(pelvis_axis, joint_axes["pelvis_z"]) * pelvis_theta
+            pos[1] = np.dot(pelvis_axis, joint_axes["pelvis_x"]) * pelvis_theta
+            pos[2] = np.dot(pelvis_axis, joint_axes["pelvis_y"]) * pelvis_theta
             
             # Right Side
             pos[9] = np.dot(shank_r_axis, joint_axes["knee"]) * shank_r_theta
@@ -196,6 +231,8 @@ def main():
         report_error(e)
     finally:
         print("Ending Stream.")
+        pelvis_imu.set_to_idle()
+        
         shank_r_imu.set_to_idle()
         thigh_r_imu.set_to_idle()
         
