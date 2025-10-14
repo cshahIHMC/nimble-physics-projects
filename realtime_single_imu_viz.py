@@ -13,14 +13,14 @@ Description:
     Key Features:
         - Connects to a MicroStrain IMU via serial interface
         - Configures and streams filtered orientation data (quaternion)
-        - Converts quaternion to rotation vector and updates a Nimble skeleton
+        - Converts quaternion to rotation vector and updates a simble box in the nimble gui
         - Provides real-time visualization through Nimble’s WebSocket GUI
         - Includes a least-squares velocity and acceleration solver (optional)
 
     Usage:
         Run this script directly to visualize the IMU orientation.
         Example:
-            $ python3 imu_orientation_viz.py
+            $ python3 reltime_single_imu_viz.py
 
     Requirements:
         - MicroStrain IMU driver and Python API
