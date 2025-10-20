@@ -50,7 +50,7 @@ def main():
     
     pelvis_imu = MicroStrainIMU("195772", 921600)
 
-    shank_r_imu = MicroStrainIMU("196864", 921600)
+    shank_r_imu = MicroStrainIMU("195773", 921600)
     thigh_r_imu = MicroStrainIMU("195778", 921600)
     
     thigh_l_imu = MicroStrainIMU("195775", 921600)

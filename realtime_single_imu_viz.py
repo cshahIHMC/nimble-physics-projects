@@ -81,7 +81,7 @@ def main():
     """
 
     # --- IMU Configuration ---
-    imu = MicroStrainIMU("196864", 921600)
+    imu = MicroStrainIMU("195779", 921600)
     NODE_RATE = 200  # IMU stream rate (Hz)
 
     # --- World Setup ---
