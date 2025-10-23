@@ -66,10 +66,10 @@ def leastSquareVelAndAccSolver(imu_acc, imu_gyro, sensors, skeleton):
 def get_estfilter_data(imu):
     data = imu.get_ESTFILTER_data(20, 0)
     quat = np.array([
-        data[10].as_floatAt(0),
-        data[10].as_floatAt(1),
-        data[10].as_floatAt(2),
-        data[10].as_floatAt(3)
+        data[11].as_floatAt(0),
+        data[11].as_floatAt(1),
+        data[11].as_floatAt(2),
+        data[11].as_floatAt(3)
     ])
     return quat
 
@@ -81,7 +81,7 @@ def main():
     """
 
     # --- IMU Configuration ---
-    imu = MicroStrainIMU("195779", 921600)
+    imu = MicroStrainIMU("195772", 921600)
     NODE_RATE = 200  # IMU stream rate (Hz)
 
     # --- World Setup ---

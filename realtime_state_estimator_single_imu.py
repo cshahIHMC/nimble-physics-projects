@@ -40,6 +40,8 @@ import time
 from dataclasses import dataclass
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+from Microstrain import MicroStrainIMU
+import sys
 
 # ---------------------------------------------------------------
 # Utility: Quaternion helpers (world<-body)
@@ -86,6 +88,12 @@ def sigma_points(x: np.ndarray, P: np.ndarray, alpha=1e-3, beta=2.0, kappa=0.0):
     n = x.size
     lam = alpha**2 * (n + kappa) - n
     c = n + lam
+    # Ensure symmetry and numerical stability
+    P = 0.5 * (P + P.T)
+    min_eig = np.min(np.real(np.linalg.eigvals(P)))
+    if min_eig < 1e-9:
+        P += np.eye(P.shape[0]) * (1e-9 - min_eig)
+    
     U = np.linalg.cholesky(c * P)
 
     X = np.zeros((n, 2*n + 1))
@@ -214,7 +222,7 @@ class AttitudeUKF:
         #   block for tangent orientation (3) + bg (3) + ba (3), and small quat noise on diag
         # For simplicity, we keep full 10x10 with small diag for quat entries.
         # Embed:
-        P_out = np.eye(10) * 1e-9
+        P_out = np.eye(10) * 1e-6
         P_out[0:3, 0:3] = P_pred[0:3, 0:3]  # orientation tangent
         P_out[4:7, 4:7] = P_pred[3:6, 3:6]
         P_out[7:10,7:10]= P_pred[6:9, 6:9]
@@ -294,7 +302,14 @@ class AttitudeUKF:
         ba_upd = ba + dx[7:10]
 
         self.z = self.compose_state(q_upd, bg_upd, ba_upd)
+        
         self.P = self.P - K @ S @ K.T
+        self.P = 0.5 * (self.P + self.P.T)
+        min_eig = np.min(np.real(np.linalg.eigvals(self.P)))
+        if min_eig < 1e-9:
+            self.P += np.eye(self.P.shape[0]) * (1e-9 - min_eig)
+
+
 
     @property
     def q_wb(self) -> np.ndarray:
@@ -312,33 +327,25 @@ class AttitudeUKF:
 # Sensor I/O placeholder
 # ---------------------------------------------------------------
 
-def read_sensor() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def get_imu_data(imu) -> np.ndarray:
+    data = imu.get_ESTFILTER_data(20, 0)
+    return np.array(data[1:10])
+
+
+def read_sensor(data:np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Replace this with your actual sensor read.
     Returns:
         acc_b (3,)  : accelerometer in m/s^2 (body frame)
         gyro_b (3,) : gyroscope in rad/s (body frame)
         mag_b (3,)  : magnetometer in arbitrary units (body frame)
     """
-    # --- DEMO: simulate a slow yaw and small noise ---
-    # You MUST replace this with your device read (e.g., MicroStrainIMU.read())
-    # Example structure:
-    #   a = imu.get_accel_mps2()
-    #   w = imu.get_gyro_rps()
-    #   m = imu.get_mag_uT()
-    t = time.time()
-    yaw_rate = 0.2  # rad/s
-    gyro = np.array([0.0, 0.0, yaw_rate]) + np.random.randn(3)*0.002
+    acc_b = data[0:3] * 9.80655
+    # print(acc_b)
+    gyro = data[3:6]
+    # print(gyro)
+    mag_b = data[6:9]
+    # print(mag_b)
 
-    # gravity in world; create fake body accel = only gravity sensed (no linear accel)
-    # We'll rotate g_w into body using a synthetic yaw angle
-    yaw = yaw_rate * t
-    R_wb = R.from_euler('z', yaw).as_matrix()
-    g_w = np.array([0, 0, -9.81])
-    acc_b = R_wb.T @ g_w + np.random.randn(3)*0.05
-
-    # magnetic field roughly along x in world
-    m_w = np.array([0.40, 0.00, 0.10])
-    mag_b = R_wb.T @ m_w + np.random.randn(3)*0.01
     return acc_b, gyro, mag_b
 
 # ---------------------------------------------------------------
@@ -348,6 +355,20 @@ def read_sensor() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 def main():
     cfg = AttitudeUKFConfig()
     ahrs = AttitudeUKF(cfg)
+    
+    # --- IMU Configuration ---
+    imu = MicroStrainIMU("195772", 921600)
+    NODE_RATE = 200  # IMU stream rate (Hz)
+            
+            
+    # --- Configure IMU filtering ---
+    try:
+        imu.configure_ESTFLTER_imu(NODE_RATE)
+    except Exception as e:
+        exc_type, _, tb = sys.exc_info()
+        print(f"Error configuring IMU on line {tb.tb_lineno}: {e}")
+        imu.set_to_idle()
+                
 
     # World constants (set your local magnetic field direction; magnitude unimportant)
     g_w = np.array([0, 0, -9.81])
@@ -358,7 +379,7 @@ def main():
     v_w = np.zeros(3)
 
     # Timing
-    rate_hz = 100.0
+    rate_hz = 200.0
     dt = 1.0 / rate_hz
     last = time.time()
 
@@ -372,11 +393,12 @@ def main():
             if now - last < dt:
                 time.sleep(dt - (now - last))
                 now = time.time()
-            dt_i = max(1e-3, now - last)
+            dt_i = np.clip(now - last, 0, 0.02)
             last = now
 
             # 1) Read sensors
-            acc_b, gyro_b, mag_b = read_sensor()
+            data_np = get_imu_data(imu)
+            acc_b, gyro_b, mag_b = read_sensor(data_np)
 
             # 2) Attitude UKF predict with gyro
             ahrs.predict(gyro_b, dt_i)
@@ -404,6 +426,19 @@ def main():
 
     except KeyboardInterrupt:
         print("\nStopped.")
+    except Exception as e:
+        exc_type, _, tb = sys.exc_info()
+        print(f"Error during loop at line {tb.tb_lineno}: {e}")
+        imu.set_to_idle()
+    
+    # --- Cleanup on Exit ---
+    try:
+        print("Ending IMU Stream...")
+        imu.set_to_idle()
+    except Exception as e:
+        exc_type, _, tb = sys.exc_info()
+        print(f"Error ending stream at line {tb.tb_lineno}: {e}")
+
 
 
 if __name__ == "__main__":
