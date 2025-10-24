@@ -17,6 +17,9 @@ import sys
 from Microstrain import MicroStrainIMU
 from scipy.spatial.transform import Rotation as R
 from Tools.live_plotter import LivePlotter3D
+import collections
+import nimblephysics as nimble
+import torch
 
 
 
@@ -50,6 +53,12 @@ def rotmat_from_quat(q):
     """Rotation matrix world<-body."""
     return R.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
 
+def quat_conjugate(q):
+    return np.array([q[0], -q[1], -q[2], -q[3]])
+
+def quat_hemisphere(q):
+    # Ensure scalar part non-negative to avoid 180° Euler flips
+    return q if q[0] >= 0 else -q
 
 # --------------------------------------------------------------------
 # Mahony Filter for orientation fusion (gyro + accel + mag)
@@ -161,9 +170,10 @@ class KalmanFilter6D:
 # --------------------------------------------------------------------
 def get_imu_data(imu):
     data = imu.get_ESTFILTER_data(20, 0)
-    return np.array(data[1:10])
+    device_time = data[0]
+    return np.array(data[1:10]), device_time
 
-def read_sensor(data, plotter):
+def read_sensor(data, plotter=None):
     acc_b = data[0:3] * 9.80665
     gyro_b = data[3:6]
     mag_b  = data[6:9]
@@ -180,65 +190,137 @@ def read_sensor(data, plotter):
 # MAIN LOOP
 # --------------------------------------------------------------------
 def main():
-    
-    # Setup the live plotter for debugging
-    plotter = LivePlotter3D(window=5, title="Live Acc/Gyro/Mag Example")
-
     NODE_RATE = 200
-    dt = 1.0 / NODE_RATE
+    dt_target = 1.0 / NODE_RATE
+    
+    plotter = LivePlotter3D(300)
 
     imu = MicroStrainIMU("195772", 921600)
     try:
+        print("Did I configure?")
         imu.configure_ESTFLTER_imu(NODE_RATE)
     except Exception as e:
         exc_type, _, tb = sys.exc_info()
         print(f"Error configuring IMU on line {tb.tb_lineno}: {e}")
         imu.set_to_idle()
 
-    # Initialize Kalman filter and orientation quaternion
-    kf = KalmanFilter6D(dt=dt)
-    q_wb = np.array([1, 0, 0, 0])   # world<-body
-    
+    # Initialize filters
+    kf = KalmanFilter6D(dt=dt_target)
+    q_wb = np.array([0, 1, 0, 0])   # world<-body
     mahony = MahonyFilter(kp=2.0, ki=0.05)
+    
+    # ---------------------------------------------------------
+    # INITIAL ORIENTATION CALIBRATION (makes start = identity)
+    # ---------------------------------------------------------
+    print("Calibrating initial orientation... hold IMU still for ~0.5s")
+    q_tmp = np.array([1,0,0,0], dtype=float)
+    samples = 100
+    for _ in range(samples):
+        data = imu.get_ESTFILTER_data(20, 0)
+        data_np = np.array(data[1:10])
+        acc_b = data_np[0:3] * 9.80665          # m/s^2
+        gyro_b = data_np[3:6]                    # likely deg/s from MicroStrain
+        mag_b  = data_np[6:9]
+
+        # Convert gyro to rad/s (CRITICAL for your integration math)
+        q_tmp = mahony.step(q_tmp, gyro_b, acc_b, mag_b, 1.0/float(NODE_RATE))
+
+    # Reference so that first pose becomes identity
+    q_ref = quat_conjugate(q_tmp)
+    print("Reference orientation set (start will be 0,0,0).")
 
 
     print("Running linear KF with quaternion orientation.")
     print("time, px, py, pz, vx, vy, vz, qw, qx, qy, qz")
 
-    last = time.time()
-    g_w = np.array([0, 0, -9.81])   # gravity in world
+    # ----------------------------------------------------------------
+    # Timing and tracking setup
+    # ----------------------------------------------------------------
+    N = 200  # averaging window
+    loop_intervals = collections.deque(maxlen=N)
+    device_intervals = collections.deque(maxlen=N)
 
+    start_time = time.perf_counter()
+    last_loop_time = start_time
+    last_device_time = None
+    g_w = np.array([0, 0, -9.81])
+    counter = 0
+    
+    # ----------------------------------------------------------------
+    # Setting up nimble physics simulation environment
+    # ----------------------------------------------------------------
+    
+    # --- World Setup ---
+    world = nimble.simulation.World()
+    world.setGravity([0, 0, 0])  # No gravity for visualization
+
+    # --- Create a simple body to represent IMU ---
+    box = nimble.dynamics.Skeleton()
+    boxJoint, boxBody = box.createFreeJointAndBodyNodePair()
+    boxShape = boxBody.createShapeNode(nimble.dynamics.BoxShape([0.15, 0.1, 0.05]))
+    boxVisual = boxShape.createVisualAspect()
+    boxVisual.setColor([0.5, 0.5, 0.5])
+    world.addSkeleton(box)
+    box.setName("IMU_Object")
+    
+    # --- Initial State ---
+    initial_rotation = torch.zeros(3)
+    initial_velocity = torch.zeros(world.getNumDofs(), requires_grad=True)
+
+    # --- GUI Setup ---
+    gui = nimble.NimbleGUI(world)
+    gui.serve(8080)
+    gui.nativeAPI().renderSkeleton(box)
+
+    # --- Draw a basis at IMU origin ---
+    box_transform = boxBody.getWorldTransform()
+    box_pos = box_transform.translation()
+    box_euler = nimble.math.matrixToEulerXYZ(box_transform.rotation())
+    gui.nativeAPI().renderBasis(scale=0.3, pos=box_pos, euler=box_euler, prefix="IMU_basis")
+    
+    initial_position = torch.tensor([0,0,0])
+    initial_rotation = torch.tensor([0,0,0])
+    state = torch.cat((initial_position, initial_rotation), 0)
+
+    # ----------------------------------------------------------------
+    # Main loop
+    # ----------------------------------------------------------------
     try:
         while True:
-            now = time.time()
-            if now - last < dt:
-                time.sleep(dt - (now - last))
-            dt_i = np.clip(time.time() - last, 0, 0.02)
-            last = now
+            loop_start = time.perf_counter()
+            dt_loop = loop_start - last_loop_time
+            last_loop_time = loop_start
 
             # 1) Read IMU data
-            data_np = get_imu_data(imu)
-            acc_b, gyro_b, mag_b = read_sensor(data_np, plotter)
+            data = (imu.get_ESTFILTER_data(20, 0))
+            device_time = data[0]  
+            data_np = np.array(data[1:10])
+            acc_b = data_np[0:3] * 9.80665
+            gyro_b = data_np[3:6]
+            mag_b  = data_np[6:9]
+        
 
-            # 2) Update quaternion orientation by integrating gyro
-            q_wb = mahony.step(q_wb, gyro_b, acc_b, mag_b, dt_i)
+            # Track device time difference for frequency estimation
+            if last_device_time is not None:
+                device_intervals.append(device_time - last_device_time)
+            last_device_time = device_time
+
+            # 2) Update orientation (Mahony)
+            q_wb = mahony.step(q_wb, gyro_b, acc_b, mag_b, dt_loop)
             
-            # Suppose q_wb = np.array([w, x, y, z])
-            # r = R.from_quat([q_wb[1], q_wb[2], q_wb[3], q_wb[0]])  # SciPy expects [x, y, z, w]
-            # euler = r.as_euler('xyz', degrees=True) 
-            # print(" Orientation: ", euler)
-            # plotter.update(euler)
+            # Apply reference so start is identity and rotations are about the sensor's own axes
+            q_wb = quat_multiply(q_ref, q_wb)
+            q_wb = quat_hemisphere(q_wb)
+            
 
-            # 3) Rotate accel to world frame
+            # 3) Rotate accel into world frame
             R_wb = rotmat_from_quat(q_wb)
-            # print("1: ", acc_b)
-            acc_w = R_wb @ acc_b + np.array([0, 0, 9.80665])  # add gravity back
-            # print(acc_w)
+            acc_w = R_wb @ acc_b + np.array([0, 0, 9.80665])
 
             # 4) KF predict step
             kf.predict(acc_w)
 
-            # 5) Optional fake position measurement (to show update)
+            # 5) Optional fake position measurement (for stability)
             if np.random.rand() < 0.05:
                 z_meas = kf.x[0:3].flatten() + np.random.randn(3) * 0.1
                 kf.update(z_meas)
@@ -246,22 +328,70 @@ def main():
             # 6) Get estimates
             p, v = kf.get_state()
 
-            # 7) Print
-            print(f"{now:.3f}, {p[0]: .3f}, {p[1]: .3f}, {p[2]: .3f}, "
-                  f"{v[0]: .3f}, {v[1]: .3f}, {v[2]: .3f}, "
-                  f"{q_wb[0]: .4f}, {q_wb[1]: .4f}, {q_wb[2]: .4f}, {q_wb[3]: .4f}")
+            # 7) Timing bookkeeping
+            loop_intervals.append(dt_loop)
+            counter += 1
+
+            # ----------------------------------------------------------------
+            # Print every N iterations
+            # ----------------------------------------------------------------
+            if counter % N == 0 and len(loop_intervals) == N:
+                print("In thie loop")
+                avg_loop_rate = len(loop_intervals) / sum(loop_intervals)
+
+                if len(device_intervals) > 0:
+                    avg_device_period = sum(device_intervals) / len(device_intervals)
+                    avg_device_rate = 1.0 / avg_device_period if avg_device_period > 0 else 0.0
+                else:
+                    avg_device_rate = 0.0
+
+                elapsed = loop_start - start_time
+
+                print(f"\nElapsed: {elapsed:.3f} s | "
+                      f"Loop rate: {avg_loop_rate:.2f} Hz | "
+                      f"Device rate: {avg_device_rate:.2f} Hz")
+
+                print(f"Pos [m]: ({p[0]: .3f}, {p[1]: .3f}, {p[2]: .3f}) | "
+                      f"Vel [m/s]: ({v[0]: .3f}, {v[1]: .3f}, {v[2]: .3f}) | "
+                      f"Quat: ({q_wb[0]: .4f}, {q_wb[1]: .4f}, {q_wb[2]: .4f}, {q_wb[3]: .4f})")
+                
+            
+            
+            imu_rotvec = torch.tensor(R.from_quat(q_wb).as_rotvec())
+            
+            
+            plotter.update(R.from_quat(q_wb).as_euler('zyx', degrees=True))
+            # --- Update simulation state ---
+            position = torch.tensor(p)
+            zeros1 = torch.tensor([0,0,0])
+            zeros2 = torch.tensor([0,0,0])
+            state = torch.cat((imu_rotvec, position, zeros1, zeros2), 0)
+            state = nimble.timestep(world, state, torch.zeros(world.getNumDofs()))
+
+            # --- Render the updated state ---
+            gui.nativeAPI().renderWorld(world)
+
+
+
+            # ----------------------------------------------------------------
+            # Enforce 200 Hz target rate
+            # ----------------------------------------------------------------
+            elapsed_loop = time.perf_counter() - loop_start
+            sleep_time = dt_target - elapsed_loop
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\nStopped by user.")
     except Exception as e:
         exc_type, _, tb = sys.exc_info()
         print(f"Error during loop at line {tb.tb_lineno}: {e}")
-        imu.set_to_idle()
-
-    try:
-        imu.set_to_idle()
-    except:
-        pass
+    finally:
+        try:
+            imu.set_to_idle()
+            print("IMU set to idle mode.")
+        except Exception as e:
+            print(f"Warning: Failed to set IMU to idle: {e}")
 
 
 if __name__ == "__main__":
