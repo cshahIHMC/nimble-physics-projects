@@ -177,11 +177,6 @@ def read_sensor(data, plotter=None):
     acc_b = data[0:3] * 9.80665
     gyro_b = data[3:6]
     mag_b  = data[6:9]
-    # print("acc: ", acc_b )
-    # print("gyro: ", gyro_b )
-    # print("mag: ", mag_b)
-    
-    # plotter.update(np.array(acc_b))
     
     return acc_b, gyro_b, mag_b
 

@@ -148,6 +148,11 @@ class MicroStrainIMU:
             ahrsImuChs.append(mscl.MipChannel(mscl.MipTypes.CH_FIELD_SENSOR_SCALED_MAG_VEC, mscl.SampleRate.Hertz(self.sample_rate)))
             ahrsImuChs.append(mscl.MipChannel(mscl.MipTypes.CH_FIELD_SENSOR_SCALED_ACCEL_VEC, mscl.SampleRate.Hertz(self.sample_rate)))
             ahrsImuChs.append(mscl.MipChannel(mscl.MipTypes.CH_FIELD_SENSOR_SCALED_GYRO_VEC, mscl.SampleRate.Hertz(self.sample_rate)))
+            
+            ## Attempt to get delta theta and delta velocity
+            ahrsImuChs.append(mscl.MipChannel(mscl.MipTypes.CH_FIELD_SENSOR_DELTA_THETA_VEC, mscl.SampleRate.Hertz(self.sample_rate)))
+            ahrsImuChs.append(mscl.MipChannel(mscl.MipTypes.CH_FIELD_SENSOR_DELTA_VELOCITY_VEC, mscl.SampleRate.Hertz(self.sample_rate)))
+            
             ahrsImuChs.append(mscl.MipChannel(mscl.MipTypes.CH_FIELD_SENSOR_ORIENTATION_QUATERNION, mscl.SampleRate.Hertz(sample_rate)))
             
             ahrsImuChs.append(mscl.MipChannel(mscl.MipTypes.CH_FIELD_SENSOR_GPS_CORRELATION_TIMESTAMP, mscl.SampleRate.Hertz(self.sample_rate)))
@@ -192,7 +197,7 @@ class MicroStrainIMU:
             # get all the datapoints in one packet
             points = packet.data()
             for dataPoint in points:              
-                #print(dataPoint.channelName(), " ", dataPoint.as_string())
+                # print(dataPoint.channelName(), " ", dataPoint.as_string())
                 if 'AccelX' in dataPoint.channelName():
                    self.accel_x = dataPoint.as_float()
                 elif 'AccelY' in dataPoint.channelName():
@@ -213,6 +218,18 @@ class MicroStrainIMU:
                     self.mag_y = dataPoint.as_float()
                 elif 'MagZ' in dataPoint.channelName():
                     self.mag_z = dataPoint.as_float()
+                elif 'deltaThetaX' in dataPoint.channelName():
+                    self.deltaThetax = dataPoint.as_float()
+                elif 'deltaThetaY' in dataPoint.channelName():
+                    self.deltaThetay = dataPoint.as_float()
+                elif 'deltaThetaZ' in dataPoint.channelName():
+                    self.deltaThetaz = dataPoint.as_float()
+                elif 'deltaVelX' in dataPoint.channelName():
+                    self.deltaVelx = dataPoint.as_float()
+                elif 'deltaVelY' in dataPoint.channelName():
+                    self.deltaVely = dataPoint.as_float()
+                elif 'deltaVelZ' in dataPoint.channelName():
+                    self.deltaVelz = dataPoint.as_float()
                 elif 'orientQuaternion' in dataPoint.channelName():
                     self.quat = dataPoint.as_Vector()
                 elif 'estOrientQuaternion' in dataPoint.channelName():
@@ -222,8 +239,7 @@ class MicroStrainIMU:
                 
              
             # return (self.timestamp, self.accel_x, self.accel_y, self.accel_z, self.gyro_x, self.gyro_y, self.gyro_z, self.quat, self.ESTquat)
-            return (self.timestamp, self.accel_x, self.accel_y, self.accel_z, self.gyro_x, self.gyro_y, self.gyro_z, self.mag_x, self.mag_y, self.mag_z, self.quat, self.ESTquat)
-
+            return (self.timestamp, self.accel_x, self.accel_y, self.accel_z, self.gyro_x, self.gyro_y, self.gyro_z, self.mag_x, self.mag_y, self.mag_z, self.quat, self.ESTquat, self.deltaThetax, self.deltaThetay, self.deltaThetaz, self.deltaVelx, self.deltaVely, self.deltaVelz)
 
 # if __name__ == "__main__":
 
