@@ -30,16 +30,49 @@ def safe_axis_angle(rotvec: np.ndarray) -> Tuple[np.ndarray, float]:
 def get_estfilter_data(imu):
     data = imu.get_ESTFILTER_data(20, 0)
     quat = np.array([
-        data[10].as_floatAt(0),
-        data[10].as_floatAt(1),
-        data[10].as_floatAt(2),
-        data[10].as_floatAt(3)
+        data[11].as_floatAt(0),
+        data[11].as_floatAt(1),
+        data[11].as_floatAt(2),
+        data[11].as_floatAt(3)
     ])
     return quat
 
 def report_error(e):
     exc_type, _, tb = sys.exc_info()
     print(f"[{exc_type.__name__}] {e} (line {tb.tb_lineno})")
+
+# ------------------------------------------------------------------
+# Zeroing functions
+# ------------------------------------------------------------------
+def compute_imu_to_world_transform(acc_b, gyro_b, mag_b):
+    """
+    Given accelerometer, gyro, and magnetometer (in IMU frame),
+    compute rotation matrix from IMU frame → anatomical world frame.
+    """
+    # Normalize accelerometer (gravity)
+    g_b = acc_b / np.linalg.norm(acc_b)
+    # print(g_b)
+    y_world = g_b  # Up direction is opposite of gravity
+    
+    # Remove gravity from magnetometer to get horizontal projection
+    mag_proj = mag_b - np.dot(mag_b, y_world) * y_world
+    x_world = mag_proj / np.linalg.norm(mag_proj)  # Forward direction
+    
+
+    # Compute right direction
+    z_world = np.cross(x_world, y_world)
+    z_world /= np.linalg.norm(z_world)
+    
+
+    # # Re-orthogonalize (optional)
+    # x_world = np.cross(y_world, z_world)
+    # x_world /= np.linalg.norm(x_world)
+
+    # Construct rotation matrix: columns are world axes in IMU frame
+    R_imu_to_world = R.from_matrix(np.vstack([x_world, y_world, z_world]))
+
+    return R_imu_to_world
+
 
 
 # ------------------------------------------------------------------
@@ -86,7 +119,11 @@ def main():
     world.addSkeleton(skeleton)
 
     # Precompute transforms
-    transform_right_imu_to_world = R.from_matrix(rotation_matrix_z(-np.pi / 2) @ rotation_matrix_x(np.pi))
+    # transform_right_imu_to_world = R.from_matrix(rotation_matrix_z(-np.pi / 2) @ rotation_matrix_x(np.pi))
+    
+    # if right imu is at front
+    transform_right_imu_to_world = R.from_matrix(rotation_matrix_x(np.pi / 2) @ rotation_matrix_y(np.pi/2))
+    
     transform_right_imu_to_world_inv = transform_right_imu_to_world.inv()
     
     transform_left_imu_to_world = R.from_matrix(rotation_matrix_z(-np.pi / 2))
@@ -120,10 +157,20 @@ def main():
     )
 
     joint_axes = {
+        
         "knee": np.array([0, 0, -1]),
+        
+        # for thigh imu in front config
+        "r_knee": np.array([1, 0, 0]),
+        
         "hip_x": np.array([-1, 0, 0]),
         "hip_y": np.array([0, -1, 0]),
         "hip_z": np.array([0, 0, 1]),
+        
+        "r_hip_front_x": np.array([-1, 0, 0]),
+        "r_hip_front_y": np.array([0, 1, 0]),
+        "r_hip_front_z": np.array([0, 0, -1]),
+        
         "l_hip_x": np.array([1, 0, 0]),
         "l_hip_y": np.array([0, 1, 0]),
         "pelvis_x": np.array([-1, 0, 0]),
@@ -170,11 +217,15 @@ def main():
             
             
             # # Shank relative to thigh
-            shank_r_quat_rel = thigh_r_quat_zeroed.inv() * shank_r_quat_zeroed
+            # shank_r_quat_rel = thigh_r_quat_zeroed.inv() * shank_r_quat_zeroed
+            shank_r_quat_rel = (thigh_r_quat0.inv() * shank_r_quat0).inv() * (thigh_r_quat.inv() * shank_r_quat)
             shank_l_quat_rel = thigh_l_quat_zeroed.inv() * shank_l_quat_zeroed
             
             thigh_r_quat_rel = (pelvis_quat0.inv() * thigh_r_quat0).inv() * (pelvis_quat.inv() * thigh_r_quat)
             thigh_l_quat_rel = (pelvis_quat0.inv() * thigh_l_quat0).inv() * (pelvis_quat.inv() * thigh_l_quat)
+            
+            # thigh_r_quat_rel = (thigh_r_quat0).inv() * (thigh_r_quat)
+            # thigh_l_quat_rel = (thigh_l_quat0).inv() * (thigh_l_quat)
 
             # Transform to joint frame
             pelvis_quat_joint_frame = transform_pelvis_imu_to_world * pelvis_quat_zeroed * transform_pelvis_imu_to_world_inv
@@ -203,11 +254,17 @@ def main():
             pos[2] = np.dot(pelvis_axis, joint_axes["pelvis_y"]) * pelvis_theta
             
             # Right Side
-            pos[9] = np.dot(shank_r_axis, joint_axes["knee"]) * shank_r_theta
-            pos[6] = np.dot(thigh_r_axis, joint_axes["hip_z"]) * thigh_r_theta
-            pos[7] = np.dot(thigh_r_axis, joint_axes["hip_x"]) * thigh_r_theta
-            pos[8] = np.dot(thigh_r_axis, joint_axes["hip_y"]) * thigh_r_theta
+            pos[9] = np.dot(shank_r_axis, joint_axes["r_knee"]) * shank_r_theta
+            # pos[6] = np.dot(thigh_r_axis, joint_axes["hip_z"]) * thigh_r_theta
+            # pos[7] = np.dot(thigh_r_axis, joint_axes["hip_x"]) * thigh_r_theta
+            # pos[8] = np.dot(thigh_r_axis, joint_axes["hip_y"]) * thigh_r_theta
             
+            
+            # Imu location on front of thigh
+            pos[6] = np.dot(thigh_r_axis, joint_axes["r_hip_front_z"]) * thigh_r_theta
+            pos[7] = np.dot(thigh_r_axis, joint_axes["r_hip_front_x"]) * thigh_r_theta
+            pos[8] = np.dot(thigh_r_axis, joint_axes["r_hip_front_y"]) * thigh_r_theta
+                        
             # Left Side
             pos[16] = np.dot(shank_l_axis, joint_axes["knee"]) * shank_l_theta
             pos[13] = np.dot(thigh_l_axis, joint_axes["hip_z"]) * thigh_l_theta

@@ -44,6 +44,38 @@ import nimblephysics as nimble
 from Microstrain import MicroStrainIMU
 
 
+import numpy as np
+from scipy.spatial.transform import Rotation as R
+
+def compute_imu_to_world_transform(acc_b, gyro_b, mag_b):
+    """
+    Given accelerometer, gyro, and magnetometer (in IMU frame),
+    compute rotation matrix from IMU frame → anatomical world frame.
+    """
+    # Normalize accelerometer (gravity)
+    g_b = acc_b / np.linalg.norm(acc_b)
+    # print(g_b)
+    y_world = g_b  # Up direction is opposite of gravity
+    
+    # Remove gravity from magnetometer to get horizontal projection
+    mag_proj = mag_b - np.dot(mag_b, y_world) * y_world
+    x_world = mag_proj / np.linalg.norm(mag_proj)  # Forward direction
+    
+
+    # Compute right direction
+    z_world = np.cross(x_world, y_world)
+    z_world /= np.linalg.norm(z_world)
+    
+
+    # # Re-orthogonalize (optional)
+    # x_world = np.cross(y_world, z_world)
+    # x_world /= np.linalg.norm(x_world)
+
+    # Construct rotation matrix: columns are world axes in IMU frame
+    R_imu_to_world = R.from_matrix(np.vstack([x_world, y_world, z_world]))
+
+    return R_imu_to_world
+
 def leastSquareVelAndAccSolver(imu_acc, imu_gyro, sensors, skeleton):
     """
     Solves least-squares estimates for joint velocities and accelerations
@@ -63,6 +95,31 @@ def leastSquareVelAndAccSolver(imu_acc, imu_gyro, sensors, skeleton):
 
     return vel, acc
 
+
+# --------------------------------------------------------------------
+# IMU helpers
+# --------------------------------------------------------------------
+
+def get_imu_data(imu):
+    data = imu.get_ESTFILTER_data(20, 0)
+    device_time = data[0]
+    
+    quat = np.array([
+        data[10].as_floatAt(0),
+        data[10].as_floatAt(1),
+        data[10].as_floatAt(2),
+        data[10].as_floatAt(3)
+    ])
+        
+    return np.array(data[1:10]), quat
+
+def read_sensor(data, plotter=None):
+    acc_b = data[0:3] * 9.80665
+    gyro_b = data[3:6]
+    mag_b  = data[6:9]
+    
+    return acc_b, gyro_b, mag_b
+
 def get_estfilter_data(imu):
     data = imu.get_ESTFILTER_data(20, 0)
     quat = np.array([
@@ -81,7 +138,7 @@ def main():
     """
 
     # --- IMU Configuration ---
-    imu = MicroStrainIMU("195779", 921600)
+    imu = MicroStrainIMU("195772", 921600)
     NODE_RATE = 200  # IMU stream rate (Hz)
 
     # --- World Setup ---
@@ -120,28 +177,40 @@ def main():
         print(f"Error configuring IMU on line {tb.tb_lineno}: {e}")
         imu.set_to_idle()
 
+
+    
+    ### Get data from IMU
+    imu_data, imu_quat_data = get_imu_data(imu)
+    acc, gyro, mag = read_sensor(imu_data)
+    # print(acc)
+            
+    R_imu_2_anatomical = compute_imu_to_world_transform(acc, gyro, mag)
+            
+
     # --- Initialize IMU data stream ---
     time_initial = time.perf_counter()
-    imu_quat_0 = R.from_quat(get_estfilter_data(imu), scalar_first=True)
+    imu_quat_0 = R.from_quat(imu_quat_data, scalar_first=True)
 
     state = torch.cat((initial_rotation, initial_velocity), 0)
-
+    
     # --- Main Streaming Loop ---
     while True:
         try:
             cur_time = time.perf_counter()
             device_time = cur_time - time_initial
 
-            # --- Read IMU Data ---
+            ## --- Read IMU Data ---
             imu_quat_data = get_estfilter_data(imu)
             imu_rot = R.from_quat(imu_quat_data, scalar_first=True)
 
             # Zero to starting orientation
-            imu_zeroed = imu_quat_0.inv() * imu_rot
-            imu_rotvec = imu_zeroed.as_rotvec()  # axis-angle representation
+            imu_zeroed_body = imu_quat_0.inv() * imu_rot # axis-angle representation
+            # imu_rotvec_body = imu_zeroed.as_rotvec() 
+            
+            imu_rotvec_world = (R_imu_2_anatomical * imu_zeroed_body).as_rotvec()
 
             # --- Update simulation state ---
-            state = torch.cat((torch.tensor(imu_rotvec), initial_velocity), 0)
+            state = torch.cat((torch.tensor(imu_rotvec_world), initial_velocity), 0)
             state = nimble.timestep(world, state, torch.zeros(world.getNumDofs()))
 
             # --- Render the updated state ---
