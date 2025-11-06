@@ -5,7 +5,39 @@ import numpy as np
 import sys
 import time
 from Microstrain import MicroStrainIMU
+from scipy.spatial.transform import Rotation as R
 from Tools.live_plotter import LivePlotter3D
+
+
+def compute_imu_to_world_transform(acc_b, gyro_b, mag_b):
+    """
+    Given accelerometer, gyro, and magnetometer (in IMU frame),
+    compute rotation matrix from IMU frame → anatomical world frame.
+    """
+    # Normalize accelerometer (gravity)
+    g_b = acc_b / np.linalg.norm(acc_b)
+    y_world = -g_b  # Up direction is opposite of gravity
+
+    # Remove gravity from magnetometer to get horizontal projection
+    mag_proj = mag_b - np.dot(mag_b, y_world) * y_world
+    x_world = mag_proj / np.linalg.norm(mag_proj)  # Forward direction
+
+    # Compute right direction
+    z_world = np.cross(y_world, x_world)
+    z_world /= np.linalg.norm(z_world)
+
+    # Re-orthogonalize (optional)
+    x_world = np.cross(z_world, y_world)
+    x_world /= np.linalg.norm(x_world)
+
+    # Construct rotation matrix: columns are world axes in IMU frame
+    R_imu_to_world = np.vstack([x_world, y_world, z_world]).T
+
+    # Convert to quaternion if needed
+    quat_imu_to_world = R.from_matrix(R_imu_to_world).as_quat()
+
+    return R_imu_to_world, quat_imu_to_world
+
 
 
 
@@ -74,6 +106,32 @@ def main():
             ### Get data from IMU
             imu_data = get_imu_data(imu)
             acc, gyro, mag = read_sensor(imu_data)
+            
+            
+            # Normalize accelerometer (gravity)
+            g_b = acc / np.linalg.norm(acc)
+            y_world = -g_b  # Up direction is opposite of gravity
+            
+            # Remove gravity from magnetometer to get horizontal projection
+            # For now the x_world is point north so have the person face north when starting
+            # TODO - have the forward transformed to body forward facing
+            mag_proj = mag - np.dot(mag, y_world) * y_world
+            x_world = mag_proj / np.linalg.norm(mag_proj)  # Forward direction
+            
+            # Compute right direction
+            z_world = np.cross(x_world, y_world)
+            z_world /= np.linalg.norm(z_world)
+            
+            
+            # # Construct rotation matrix: columns are world axes in IMU frame
+            R_imu_to_anatomical = np.vstack([x_world, y_world, z_world]).T
+            
+            # # Convert to quaternion if needed
+            quat_imu_to_anatomical = R.from_matrix(R_imu_to_anatomical)
+            
+            
+    
+
 
             ### Get the delta time
             loop_start = time.perf_counter()
