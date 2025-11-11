@@ -28,6 +28,27 @@ def infer_mapping(q_scipy: R, a_body: np.ndarray):
 
     return 'world->body' if e1 < e2 else 'body->world'
 
+def compute_imu_to_world_from_acc(acc_b):
+    """
+    Estimate IMU→world rotation from accelerometer (gravity direction only).
+    Defines 'up' but not heading (yaw).
+    """
+    g_b = acc_b / np.linalg.norm(acc_b)
+    y_world = g_b  # Up direction
+
+    # # Choose arbitrary x_world to define yaw = 0 (e.g., [1, 0, 0])
+    x_temp = np.array([1.0, 0.0, 0.0])
+    if np.abs(np.dot(x_temp, y_world)) > 0.9:
+        x_temp = np.array([0.0, 1.0, 0.0])
+    
+    # # Orthogonalize
+    z_world = np.cross(x_temp, y_world)
+    z_world /= np.linalg.norm(z_world)
+    x_world = np.cross(y_world, z_world)
+    x_world /= np.linalg.norm(x_world)
+
+    R_imu_to_world = R.from_matrix(np.vstack([x_world, y_world, z_world]))
+    return R_imu_to_world
 
 def get_quaternion(xsensors):
     """
@@ -37,9 +58,9 @@ def get_quaternion(xsensors):
     # Publish or read data from both sides
     left_insole_data, right_insole_data = xsensors.publish_data()
     
-    accx = right_insole_data.linx * 9.80665
-    accy = right_insole_data.liny * 9.80665
-    accz = right_insole_data.linz * 9.80665
+    accx = left_insole_data.linx * 9.80665
+    accy = left_insole_data.liny * 9.80665
+    accz = left_insole_data.linz * 9.80665
     
     acc = np.array([
         accx,
@@ -50,10 +71,10 @@ def get_quaternion(xsensors):
 
     # Extract quaternion as numpy array
     q = np.array([
-        right_insole_data.qx,
-        right_insole_data.qy,
-        right_insole_data.qz,
-        right_insole_data.qw
+        left_insole_data.qx,
+        left_insole_data.qy,
+        left_insole_data.qz,
+        left_insole_data.qw
     ], dtype=float)
     
 
@@ -73,14 +94,14 @@ def main():
     # Plotter for testing
     # plotter = LivePlotter3D(100)
     
-        # --- World Setup ---
+    # --- World Setup ---
     world = nimble.simulation.World()
     world.setGravity([0, 0, 0])  # No gravity for visualization
 
     # --- Create a simple body to represent IMU ---
     box = nimble.dynamics.Skeleton()
     boxJoint, boxBody = box.createBallJointAndBodyNodePair()
-    boxShape = boxBody.createShapeNode(nimble.dynamics.BoxShape([0.1, 0.15, 0.05]))
+    boxShape = boxBody.createShapeNode(nimble.dynamics.BoxShape([0.1, 0.05, 0.15]))
     boxVisual = boxShape.createVisualAspect()
     boxVisual.setColor([0.5, 0.5, 0.5])
     world.addSkeleton(box)
@@ -116,6 +137,7 @@ def main():
     
     feet_quat_0, acc_0 = get_quaternion(xsensors=xsensors)
     
+    feet_anatomical = compute_imu_to_world_from_acc(acc_0)
     
     ##################################################################
     # Had to do this - not ideal at all ! ###################
@@ -133,10 +155,12 @@ def main():
             
             feet_quat, acc = get_quaternion(xsensors=xsensors)
        
-            feet_quat_zeroed = feet_quat_0.inv() * feet_quat 
+            feet_quat_zeroed =  feet_quat * feet_quat_0.inv() 
+            
+            feet_rotvec = feet_anatomical.inv() * feet_quat_zeroed * feet_anatomical
             
             ## Fixing this x y issue
-            feet_rotvec = (R_z_fix * feet_quat_zeroed).as_rotvec() 
+            feet_rotvec = (feet_rotvec).as_rotvec() 
 
 
         
