@@ -72,7 +72,7 @@ def compute_imu_to_world_transform(acc_b, gyro_b, mag_b):
     # x_world /= np.linalg.norm(x_world)
 
     # Construct rotation matrix: columns are world axes in IMU frame
-    R_imu_to_world = R.from_matrix(np.vstack([x_world, y_world, z_world]))
+    R_imu_to_world = R.from_matrix(np.vstack([x_world, y_world, z_world]).T)
 
     return R_imu_to_world
 
@@ -148,7 +148,7 @@ def main():
     # --- Create a simple body to represent IMU ---
     box = nimble.dynamics.Skeleton()
     boxJoint, boxBody = box.createBallJointAndBodyNodePair()
-    boxShape = boxBody.createShapeNode(nimble.dynamics.BoxShape([0.15, 0.1, 0.05]))
+    boxShape = boxBody.createShapeNode(nimble.dynamics.BoxShape([0.05, 0.15, 0.1]))
     boxVisual = boxShape.createVisualAspect()
     boxVisual.setColor([0.5, 0.5, 0.5])
     world.addSkeleton(box)
@@ -207,7 +207,7 @@ def main():
             imu_zeroed_body = imu_quat_0.inv() * imu_rot # axis-angle representation
             # imu_rotvec_body = imu_zeroed.as_rotvec() 
             
-            imu_rotvec_world = (R_imu_2_anatomical * imu_zeroed_body).as_rotvec()
+            imu_rotvec_world = (R_imu_2_anatomical.inv() * imu_zeroed_body * R_imu_2_anatomical).as_rotvec()
 
             # --- Update simulation state ---
             state = torch.cat((torch.tensor(imu_rotvec_world), initial_velocity), 0)
