@@ -17,7 +17,7 @@ def compute_imu_to_world_from_acc(acc_b):
     g_b = acc_b / np.linalg.norm(acc_b)
     y_world = g_b  # Up direction
 
-    # # Choose arbitrary x_world to define yaw = 0 (e.g., [1, 0, 0])
+    # Choose arbitrary x_world to define yaw = 0 (e.g., [1, 0, 0])
     x_temp = np.array([1.0, 0.0, 0.0])
     if np.abs(np.dot(x_temp, y_world)) > 0.9:
         x_temp = np.array([0.0, 1.0, 0.0])
@@ -28,7 +28,7 @@ def compute_imu_to_world_from_acc(acc_b):
     x_world = np.cross(y_world, z_world)
     x_world /= np.linalg.norm(x_world)
 
-    R_imu_to_world = R.from_matrix(np.vstack([x_world, y_world, z_world]))
+    R_imu_to_world = R.from_matrix(np.vstack([x_world, y_world, z_world]).T)
     return R_imu_to_world
 
 def safe_axis_angle(rotvec: np.ndarray) -> Tuple[np.ndarray, float]:
@@ -145,8 +145,8 @@ def main():
             left_foot_quat_zeroed = left_foot_quat_0.inv() * left_foot_quat 
             right_foot_quat_zeroed = right_foot_quat_0.inv() * right_foot_quat  
             
-            left_foot_quat_joint_frame = left_foot_anatomical.inv() * left_foot_quat_zeroed * left_foot_anatomical
-            right_foot_quat_joint_frame =  right_foot_anatomical.inv() * right_foot_quat_zeroed * right_foot_anatomical
+            left_foot_quat_joint_frame = left_foot_anatomical * left_foot_quat_zeroed * left_foot_anatomical.inv()
+            right_foot_quat_joint_frame =  right_foot_anatomical * right_foot_quat_zeroed * right_foot_anatomical.inv()
             
             feet_l_axis, feet_l_theta = safe_axis_angle(left_foot_quat_joint_frame.as_rotvec())
             feet_r_axis, feet_r_theta = safe_axis_angle(right_foot_quat_joint_frame.as_rotvec())
