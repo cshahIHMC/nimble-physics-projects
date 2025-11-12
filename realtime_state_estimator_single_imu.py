@@ -40,7 +40,7 @@ import time
 from dataclasses import dataclass
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-from Microstrain import MicroStrainIMU
+from Libraries.Microstrain import MicroStrainIMU
 import sys
 
 # ---------------------------------------------------------------

@@ -1,5 +1,5 @@
-from xsensor_driver_no_ros import XSENSOR_Data
-from xsensor_driver_no_ros import XSENSORS
+from Libraries.xsensor_driver_no_ros import XSENSOR_Data
+from Libraries.xsensor_driver_no_ros import XSENSORS
 import time
 import numpy as np
 import torch

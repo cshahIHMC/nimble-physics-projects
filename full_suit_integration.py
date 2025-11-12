@@ -1,8 +1,8 @@
 import time
 import sys
 import numpy as np
-from xsensor_driver_no_ros import XSENSORS
-from Microstrain import MicroStrainIMU
+from Libraries.xsensor_driver_no_ros import XSENSORS
+from Libraries.Microstrain import MicroStrainIMU
 import nimblephysics as nimble
 from scipy.spatial.transform import Rotation as R
 from typing import List, Tuple

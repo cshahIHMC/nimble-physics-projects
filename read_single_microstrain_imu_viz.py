@@ -41,7 +41,7 @@ import torch
 from scipy.spatial.transform import Rotation as R
 
 import nimblephysics as nimble
-from Microstrain import MicroStrainIMU
+from Libraries.Microstrain import MicroStrainIMU
 
 
 import numpy as np
