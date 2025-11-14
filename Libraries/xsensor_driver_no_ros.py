@@ -77,7 +77,6 @@ class XSENSORS:
                 self.s.connect((tcp_ip, tcp_port))
                 break
             except ConnectionRefusedError:
-                print("1")
                 print('Connection refused! Retrying...')
                 self.unconnected = True
             except ConnectionResetError:

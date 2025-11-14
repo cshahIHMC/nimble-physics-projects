@@ -101,42 +101,73 @@ def get_microstrain_quat(imu):
 # ------------------------------------------------------------------
 # Zeroing functions
 # ------------------------------------------------------------------
-def compute_imu_to_world_transform(acc_b, mag_b=None):
+def compute_imu_to_world_transform(acc_b, mag_b=None, pelvis_R_anatomical=None, left_foot=False):
     """
-    Given accelerometer, and magnetometer (in IMU frame), for - Microstrain IMU
-    For Insoles assume the global world direction is pointing forward 
-    compute rotation matrix from IMU frame → anatomical world frame.
-    """
-    # Normalize accelerometer (gravity)
-    g_b = acc_b / np.linalg.norm(acc_b)
-    y_world = g_b  # Up direction is opposite of gravity
+    Compute the rotation matrix (scipy Rotation) that maps from IMU frame → anatomical world frame.
     
-    if mag_b is not None:
-        # Remove gravity from magnetometer to get horizontal projection
-        mag_proj = mag_b - np.dot(mag_b, y_world) * y_world
-        x_world = mag_proj / np.linalg.norm(mag_proj)  # Forward direction
+    For MicroStrain IMUs (pelvis + limbs): use accelerometer + magnetometer.
+    For Insoles (no magnetometer): use gravity + pelvis forward direction to resolve yaw.
+    """
 
-        # Compute right direction
+    # --------------------------------------------------------------
+    # 1. World UP direction from accelerometer (IMU frame)
+    # --------------------------------------------------------------
+    y_world = acc_b / np.linalg.norm(acc_b)
+    
+    print(y_world)
+
+    # --------------------------------------------------------------
+    # 2. MICROSTRAIN IMUs (with magnetometer)
+    # --------------------------------------------------------------
+    if mag_b is not None:
+        # Project magnetometer into horizontal plane
+        mag_proj = mag_b - np.dot(mag_b, y_world) * y_world
+        x_world = mag_proj / np.linalg.norm(mag_proj)  # forward (horizontal)
+
+        # Orthogonal right axis
         z_world = np.cross(x_world, y_world)
         z_world /= np.linalg.norm(z_world)
-    
-    else:
-        # Choose arbitrary x_world to define yaw = 0 (e.g., [1, 0, 0])
-        x_temp = np.array([1.0, 0.0, 0.0])
-        if np.abs(np.dot(x_temp, y_world)) > 0.9:
-            x_temp = np.array([0.0, 1.0, 0.0])
-    
-        # # Orthogonalize
-        z_world = np.cross(x_temp, y_world)
-        z_world /= np.linalg.norm(z_world)
-        x_world = np.cross(y_world, z_world)
-        x_world /= np.linalg.norm(x_world)
         
 
-    # Construct rotation matrix: columns are world axes in IMU frame
-    R_imu_to_world = R.from_matrix(np.vstack([x_world, y_world, z_world]).T)
+        # Build rotation: columns = world axes in IMU frame
+        R_imu_to_world = R.from_matrix(np.column_stack([x_world, y_world, z_world]))
+        return R_imu_to_world
+
+    # --------------------------------------------------------------
+    # 3. INSOLES (NO MAGNETOMETER) → must borrow yaw from pelvis
+    # --------------------------------------------------------------
+    if pelvis_R_anatomical is None:
+        raise ValueError(
+            "compute_imu_to_world_transform(): pelvis_R_anatomical must be provided for IMUs without magnetometer."
+        )
+
+    # Pelvis forward direction (world X axis in world frame)
+    pelvis_forward_world = pelvis_R_anatomical.inv().apply([1.0, 0.0, 0.0])
+    pelvis_forward_world /= np.linalg.norm(pelvis_forward_world)
+
+    # Project pelvis forward into foot's horizontal plane (remove vertical component)
+    x_world = pelvis_forward_world - np.dot(pelvis_forward_world, y_world) * y_world
+    x_world /= np.linalg.norm(x_world)
+
+    # Compute anatomical right axis
+    z_world = np.cross(x_world, y_world)
+    z_world /= np.linalg.norm(z_world)
+    
+    if left_foot:
+        x_world = -x_world
+        z_world = -z_world
+        
+    
+    print(x_world)
+    print(z_world)
+    
+
+    # Build rotation
+    R_imu_to_world = R.from_matrix(np.column_stack([x_world, y_world, z_world]))
 
     return R_imu_to_world
+
+
 
 # ------------------------------------------------------------------
 # Main
@@ -181,86 +212,87 @@ def main():
     xsensors = XSENSORS(num_xsensors = NUM_INSOLES)
     xsensorConnection = xsensors.start_server(tcp_ip=TCP_IP, startup=True)    
     
-    
-    # Get Data from the imu and generate the anatomical frames
-    pelvis_imu_data, pelvis_imu_quat_0 = get_microstrain_imu_data(pelvis_imu)
-    pelvis_acc, pelvis_gyro, pelvis_mag = get_microstrain_acc_gyro_mag(pelvis_imu_data)
-    R_pelvis_anatomical = compute_imu_to_world_transform(pelvis_acc, pelvis_mag )
- 
-    thigh_r_imu_data, thigh_r_imu_quat_0 = get_microstrain_imu_data(thigh_r_imu)
-    thigh_r_acc, thigh_r_gyro, thigh_r_mag = get_microstrain_acc_gyro_mag(thigh_r_imu_data)
-    R_thigh_r_anatomical = compute_imu_to_world_transform(thigh_r_acc, thigh_r_mag)   
-    
-    shank_r_imu_data, shank_r_imu_quat_0  = get_microstrain_imu_data(shank_r_imu)
-    shank_r_acc, shank_r_gyro, shank_r_mag = get_microstrain_acc_gyro_mag(shank_r_imu_data)
-    R_shank_r_anatomical = compute_imu_to_world_transform(shank_r_acc, shank_r_mag)   
-
-    thigh_l_imu_data, thigh_l_imu_quat_0 = get_microstrain_imu_data(thigh_l_imu)
-    thigh_l_acc, thigh_l_gyro, thigh_l_mag = get_microstrain_acc_gyro_mag(thigh_l_imu_data)
-    R_thigh_l_anatomical = compute_imu_to_world_transform(thigh_l_acc, thigh_l_mag)   
-    
-    shank_l_imu_data, shank_l_imu_quat_0  = get_microstrain_imu_data(shank_l_imu)
-    shank_l_acc, shank_l_gyro, shank_l_mag = get_microstrain_acc_gyro_mag(shank_l_imu_data)
-    R_shank_l_anatomical = compute_imu_to_world_transform(shank_l_acc, shank_l_mag)   
-    
-    foot_l_quat_0, foot_l_acc_0, foot_r_quat_0, foot_r_acc_0 = get_insole_data(xsensors=xsensors)
-    
-    foot_l_anatomical = compute_imu_to_world_transform(foot_l_acc_0)
-    foot_r_anatomical = compute_imu_to_world_transform(foot_r_acc_0)
-       
-    # Nimble world
-    world = nimble.simulation.World()
-    world.setGravity([0, 0, 0])
-
-    opensim_model = nimble.RajagopalHumanBodyModel()
-    skeleton = opensim_model.skeleton
-    world.addSkeleton(skeleton)
-    
-    # GUI
-    gui = nimble.NimbleGUI(world)
-    gui.serve(8080)
-    gui.nativeAPI().renderWorld(world)
-    gui.nativeAPI().renderBasis(scale=0.5)
-
-    tibia_r_node = skeleton.getBodyNode("tibia_r")
-    tibia_tf = tibia_r_node.getWorldTransform()
-    gui.nativeAPI().renderBasis(
-        scale=0.3,
-        pos=tibia_tf.translation(),
-        euler=nimble.math.matrixToEulerXYZ(tibia_tf.rotation()),
-        prefix="tibia_basis"
-    )
-    
-    joint_axes = {
-        
-        "pelvis_x": np.array([1, 0, 0]),
-        "pelvis_y": np.array([0, 1, 0]),
-        "pelvis_z": np.array([0, 0, 1]),
-    
-        "hip_x": np.array([1, 0, 0]),
-        "hip_y": np.array([0, 1, 0]),
-        "hip_z": np.array([0, 0, 1]),
-        
-        ####### Investigate later why I need the -1 here once I have brought all imu's to their anatomical frame ##############
-        "r_knee": np.array([0, 0, -1]),
-        
-        # For left side
-        "l_hip_x": np.array([-1, 0, 0]),
-        "l_hip_y": np.array([0, -1, 0]),
-        
-        "l_knee": np.array([0, 0, -1]),
-        
-        ######## Feet Joint axes ###########
-        "ankle_z": np.array([0, 0, 1]),
-        "r_ankle_x": np.array([-1, 0, 0]),
-        "l_ankle_x": np.array([1, 0, 0]),
-        
-    }    
-    
-    ## Setup timer
-    t_prev = time.perf_counter()
-    
     try:
+    
+        # Get Data from the imu and generate the anatomical frames
+        pelvis_imu_data, pelvis_imu_quat_0 = get_microstrain_imu_data(pelvis_imu)
+        pelvis_acc, pelvis_gyro, pelvis_mag = get_microstrain_acc_gyro_mag(pelvis_imu_data)
+        R_pelvis_anatomical = compute_imu_to_world_transform(pelvis_acc, pelvis_mag)
+    
+        thigh_r_imu_data, thigh_r_imu_quat_0 = get_microstrain_imu_data(thigh_r_imu)
+        thigh_r_acc, thigh_r_gyro, thigh_r_mag = get_microstrain_acc_gyro_mag(thigh_r_imu_data)
+        R_thigh_r_anatomical = compute_imu_to_world_transform(thigh_r_acc, thigh_r_mag)   
+        
+        shank_r_imu_data, shank_r_imu_quat_0  = get_microstrain_imu_data(shank_r_imu)
+        shank_r_acc, shank_r_gyro, shank_r_mag = get_microstrain_acc_gyro_mag(shank_r_imu_data)
+        R_shank_r_anatomical = compute_imu_to_world_transform(shank_r_acc, shank_r_mag)   
+
+        thigh_l_imu_data, thigh_l_imu_quat_0 = get_microstrain_imu_data(thigh_l_imu)
+        thigh_l_acc, thigh_l_gyro, thigh_l_mag = get_microstrain_acc_gyro_mag(thigh_l_imu_data)
+        R_thigh_l_anatomical = compute_imu_to_world_transform(thigh_l_acc, thigh_l_mag)   
+        
+        shank_l_imu_data, shank_l_imu_quat_0  = get_microstrain_imu_data(shank_l_imu)
+        shank_l_acc, shank_l_gyro, shank_l_mag = get_microstrain_acc_gyro_mag(shank_l_imu_data)
+        R_shank_l_anatomical = compute_imu_to_world_transform(shank_l_acc, shank_l_mag)   
+        
+        foot_l_quat_0, foot_l_acc_0, foot_r_quat_0, foot_r_acc_0 = get_insole_data(xsensors=xsensors)
+        
+        foot_l_anatomical = compute_imu_to_world_transform(acc_b=foot_l_acc_0, pelvis_R_anatomical=R_pelvis_anatomical, left_foot=True)
+        foot_r_anatomical = compute_imu_to_world_transform(acc_b=foot_r_acc_0, pelvis_R_anatomical=R_pelvis_anatomical)
+
+        # Nimble world
+        world = nimble.simulation.World()
+        world.setGravity([0, 0, 0])
+
+        opensim_model = nimble.RajagopalHumanBodyModel()
+        skeleton = opensim_model.skeleton
+        world.addSkeleton(skeleton)
+
+        # GUI
+        gui = nimble.NimbleGUI(world)
+        gui.serve(8080)
+        gui.nativeAPI().renderWorld(world)
+        gui.nativeAPI().renderBasis(scale=0.5)
+
+        tibia_r_node = skeleton.getBodyNode("tibia_r")
+        tibia_tf = tibia_r_node.getWorldTransform()
+        gui.nativeAPI().renderBasis(
+            scale=0.3,
+            pos=tibia_tf.translation(),
+            euler=nimble.math.matrixToEulerXYZ(tibia_tf.rotation()),
+            prefix="tibia_basis"
+        )
+
+        joint_axes = {
+
+            "pelvis_x": np.array([1, 0, 0]),
+            "pelvis_y": np.array([0, 1, 0]),
+            "pelvis_z": np.array([0, 0, 1]),
+
+            "hip_x": np.array([1, 0, 0]),
+            "hip_y": np.array([0, 1, 0]),
+            "hip_z": np.array([0, 0, 1]),
+
+            ####### Investigate later why I need the -1 here once I have brought all imu's to their anatomical frame ##############
+            "r_knee": np.array([0, 0, -1]),
+
+            # For left side
+            "l_hip_x": np.array([-1, 0, 0]),
+            "l_hip_y": np.array([0, -1, 0]),
+
+            "l_knee": np.array([0, 0, -1]),
+
+            ######## Feet Joint axes ###########
+            "ankle_z": np.array([0, 0, 1]),
+            "r_ankle_x": np.array([-1, 0, 0]),
+            "l_ankle_x": np.array([1, 0, 0]),
+
+        }    
+
+        ## Setup timer
+        t_prev = time.perf_counter()
+
+
         while True:
             
             
@@ -275,14 +307,16 @@ def main():
             foot_l_quat, foot_l_acc, foot_r_quat, foot_r_acc = get_insole_data(xsensors=xsensors)
             
             # Zero all the frames w.r.t starting frame
-            pelvis_quat_zeroed = pelvis_imu_quat_0.inv() * pelvis_quat  
+            pelvis_quat_zeroed = pelvis_imu_quat_0.inv() * pelvis_quat   
             thigh_r_quat_zeroed = thigh_r_imu_quat_0.inv() * thigh_r_quat     
             shank_r_quat_zeroed = shank_r_imu_quat_0.inv() * shank_r_quat
             thigh_l_quat_zeroed = thigh_l_imu_quat_0.inv() * thigh_l_quat   
             shank_l_quat_zeroed = shank_l_imu_quat_0.inv() * shank_l_quat     
             
-            foot_l_quat_zeroed = foot_l_quat_0.inv() * foot_l_quat 
-            foot_r_quat_zeroed = foot_r_quat_0.inv() * foot_r_quat  
+            
+            R_mount = R.from_euler("xyz", [0.0, 0.0, 180.0], degrees=True)
+            foot_l_quat_zeroed =  R_mount * foot_l_quat_0.inv() * foot_l_quat * R_mount.inv()
+            foot_r_quat_zeroed =   foot_r_quat_0.inv() * foot_r_quat
             
             # Change reference frame to the anatomical frame           
             pelvis_quat_joint_frame = R_pelvis_anatomical.inv() * pelvis_quat_zeroed * R_pelvis_anatomical
@@ -303,8 +337,10 @@ def main():
             shank_l_quat_joint_frame_rel = thigh_l_quat_joint_frame.inv() * shank_l_quat_joint_frame
             
             # for the feet
-            foot_r_quat_joint_frame_rel = shank_r_quat_joint_frame.inv() * foot_r_quat_joint_frame
-            foot_l_quat_joint_frame_rel = shank_l_quat_joint_frame.inv() * foot_l_quat_joint_frame
+            foot_r_quat_joint_frame_rel =  foot_r_quat_joint_frame * shank_r_quat_joint_frame.inv()
+            foot_l_quat_joint_frame_rel =  foot_l_quat_joint_frame * shank_l_quat_joint_frame.inv()
+            
+
             
             # Calculating the joint angles 
             
@@ -317,6 +353,18 @@ def main():
             feet_l_axis, feet_l_theta = safe_axis_angle(foot_l_quat_joint_frame_rel.as_rotvec())
             feet_r_axis, feet_r_theta = safe_axis_angle(foot_r_quat_joint_frame_rel.as_rotvec())
             
+            
+            ################## Print out for testing
+            
+            # axis, theta = safe_axis_angle(foot_r_quat_joint_frame_rel.as_rotvec())
+                
+     
+            # print("angles (deg) about X,Y,Z:", 
+            # np.degrees(axis * theta))
+            
+            
+         
+            
             # Compute joint angles
             pos = skeleton.getPositions()
             
@@ -325,7 +373,7 @@ def main():
             pos[1] = np.dot(pelvis_axis, joint_axes["pelvis_x"]) * pelvis_theta
             pos[2] = np.dot(pelvis_axis, joint_axes["pelvis_y"]) * pelvis_theta
             
-            # Right Side
+            # # Right Side
             pos[6] = np.dot(thigh_r_axis, joint_axes["hip_z"]) * thigh_r_theta
             pos[7] = np.dot(thigh_r_axis, joint_axes["hip_x"]) * thigh_r_theta
             pos[8] = np.dot(thigh_r_axis, joint_axes["hip_y"]) * thigh_r_theta
