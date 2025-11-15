@@ -412,8 +412,8 @@ def main():
 
         # Feet / ankle / subtalar axes
         "ankle_z": np.array([0.0, 0.0, 1.0]),
-        "r_ankle_x": np.array([-1.0, 0.0, 0.0]),
-        "l_ankle_x": np.array([1.0, 0.0, 0.0]),
+        "r_ankle_x": np.array([1.0, 0.0, 0.0]),
+        "l_ankle_x": np.array([-1.0, 0.0, 0.0]),
     }
     
     # ------------------------------------------------------------------
