@@ -1,7 +1,7 @@
 import time
 import sys
 import numpy as np
-from Microstrain import MicroStrainIMU
+from Libraries.Microstrain import MicroStrainIMU
 import nimblephysics as nimble
 from scipy.spatial.transform import Rotation as R
 from typing import List, Tuple

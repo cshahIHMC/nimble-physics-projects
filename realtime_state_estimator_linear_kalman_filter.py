@@ -14,7 +14,7 @@ Author: (your name)
 import numpy as np
 import time
 import sys
-from Microstrain import MicroStrainIMU
+from Libraries.Microstrain import MicroStrainIMU
 from scipy.spatial.transform import Rotation as R
 from Tools.live_plotter import LivePlotter3D
 import collections
