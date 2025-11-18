@@ -46,16 +46,69 @@ Usage:
 import sys
 import time
 from typing import List, Tuple
+import os
 
 import nimblephysics as nimble
 import numpy as np
 from Libraries.Microstrain import MicroStrainIMU
 from Libraries.xsensor_driver_no_ros import XSENSORS
 from scipy.spatial.transform import Rotation as R
+import pandas as pd
+
+DEBUG_PRINT = False
+START_FRAME = 20
+IMU_NAME_MAP = {
+    1: "pelvis",
+    2: "thigh_r",
+    3: "shank_r",
+    4: "thigh_l",
+    5: "shank_l",
+}
+
+IMU_FIELDS = [
+    "timestamp",
+    "accel_x", "accel_y", "accel_z",
+    "gyro_x", "gyro_y", "gyro_z",
+    "mag_x", "mag_y", "mag_z",
+    "quat", "est_quat",
+    "deltaThetax", "deltaThetay", "deltaThetaz",
+    "deltaVelx", "deltaVely", "deltaVelz",
+]
 
 
-DEBUG_PRINT = True
-USE_RECORDED_DATA = True
+# ---------------------------------------------------------------------------
+# LOAD FULL CSV FILE
+# ---------------------------------------------------------------------------
+def load_trial(csv_path: str) -> pd.DataFrame:
+    """
+    Load the CSV file and return a full pandas DataFrame.
+
+    Parameters
+    ----------
+    csv_path : str
+        Path to the CSV saved by your logging script.
+
+    Returns
+    -------
+    df : pandas.DataFrame
+    """
+    df = pd.read_csv(csv_path)
+    df = remap_imu_columns(df)
+    print(f"[load_trial] Loaded {csv_path} with shape {df.shape}")
+    return df
+
+def remap_imu_columns(df: pd.DataFrame) -> pd.DataFrame:
+    renamed = {}
+
+    for idx, body_name in IMU_NAME_MAP.items():
+        for f in IMU_FIELDS:
+            old = f"imu{idx}_{f}"
+            new = f"{body_name}_{f}"
+            if old in df.columns:
+                renamed[old] = new
+
+    return df.rename(columns=renamed)
+
 # =============================================================================
 # Utility functions
 # =============================================================================
@@ -94,160 +147,108 @@ def report_error(e: Exception) -> None:
 # XSENSOR insole helper functions
 # =============================================================================
 
-def get_insole_acc_quat(insole_data) -> Tuple[R, np.ndarray]:
+def get_insole_state(df, side: str, frame: int):
     """
-    Extract accelerometer + quaternion from a single insole data message.
+    side: 'L' or 'R'
+    frame: row index
 
-    Parameters
-    ----------
-    insole_data
-        Object returned by XSENSORS, expected to have attributes:
-        - linx, liny, linz  (linear acceleration, presumably in g's)
-        - qx, qy, qz, qw    (quaternion, scalar-last: [x, y, z, w])
-
-    Returns
-    -------
-    quat_rot : scipy.spatial.transform.Rotation
-        Orientation as a Rotation object.
-    acc : np.ndarray, shape (3,)
-        Linear acceleration in m/s^2 in the insole frame.
+    Returns:
+        R_quat : Rotation object
+        accel  : np.array([ax, ay, az])
+        gyro   : np.array([gx, gy, gz])
     """
-    # Convert accel to m/s^2
-    acc = np.array(
-        [
-            insole_data.linx * 9.80665,
-            insole_data.liny * 9.80665,
-            insole_data.linz * 9.80665,
-        ],
-        dtype=float,
-    )
 
-    # Quaternion: XSENSOR gives [x, y, z, w] (scalar-last)
-    q = np.array(
-        [insole_data.qx, insole_data.qy, insole_data.qz, insole_data.qw],
-        dtype=float,
-    )
+    side = side.upper()
+    if side not in ["L", "R"]:
+        raise ValueError("side must be 'L' or 'R'")
 
-    # Normalize quaternion
-    norm = np.linalg.norm(q)
-    if norm == 0:
-        raise ValueError("Quaternion magnitude is zero — invalid data from insole.")
-    q /= norm
+    # Prefix
+    prefix = f"{side}_insole"
 
-    # For XSENSOR: scalar_last = True → use scalar_first=False
-    quat_rot = R.from_quat(q, scalar_first=False)
+    # ---------------------------------------
+    # Acceleration
+    # ---------------------------------------
+    accel = np.array([
+        float(df[f"{prefix}_accel_x"].iloc[frame]) * 9.80665,
+        float(df[f"{prefix}_accel_y"].iloc[frame]) * 9.80665,
+        float(df[f"{prefix}_accel_z"].iloc[frame]) * 9.80665,
+    ])
 
-    return quat_rot, acc
+    # ---------------------------------------
+    # Gyro
+    # ---------------------------------------
+    gyro = np.array([
+        float(df[f"{prefix}_gyro_x"].iloc[frame]),
+        float(df[f"{prefix}_gyro_y"].iloc[frame]),
+        float(df[f"{prefix}_gyro_z"].iloc[frame]),
+    ])
 
+    # ---------------------------------------
+    # Quaternion (qx, qy, qz, qw)
+    # scalar_first = False (correct for this ordering)
+    # ---------------------------------------
+    quat = np.array([
+        float(df[f"{prefix}_qx"].iloc[frame]),
+        float(df[f"{prefix}_qy"].iloc[frame]),
+        float(df[f"{prefix}_qz"].iloc[frame]),
+        float(df[f"{prefix}_qw"].iloc[frame]),
+    ])
 
-def get_insole_data(xsensors: XSENSORS) -> Tuple[R, np.ndarray, R, np.ndarray]:
-    """
-    Read the latest left/right insole data and return (quat, acc) for both.
+    R_quat = R.from_quat(quat, scalar_first=False)
 
-    Parameters
-    ----------
-    xsensors : XSENSORS
-        Insole interface object.
-
-    Returns
-    -------
-    left_quat : Rotation
-    left_acc : np.ndarray, shape (3,)
-    right_quat : Rotation
-    right_acc : np.ndarray, shape (3,)
-    """
-    left_insole_data, right_insole_data = xsensors.publish_data()
-
-    left_quat, left_acc = get_insole_acc_quat(left_insole_data)
-    right_quat, right_acc = get_insole_acc_quat(right_insole_data)
-
-    return left_quat, left_acc, right_quat, right_acc
-
+    return R_quat, accel
 # =============================================================================
 # MicroStrain IMU helper functions
 # =============================================================================
 
-def get_microstrain_imu_data(imu: MicroStrainIMU) -> Tuple[np.ndarray, R]:
+# ---------------------------------------------------------------
+# Safe quaternion parser: handles "[0.1 0.2 0.3 0.4]" and variants
+# ---------------------------------------------------------------
+def parse_quat(q):
+    if isinstance(q, (list, tuple, np.ndarray)):
+        return np.array(q, dtype=float)
+
+    if isinstance(q, str):
+        clean = q.replace(",", "").replace("[", "").replace("]", "")
+        return np.fromstring(clean, sep=" ")
+
+    raise ValueError(f"Cannot parse quaternion from type {type(q)}")
+
+
+# ---------------------------------------------------------------
+# Main helper: extract IMU quat, accel, mag at a given frame
+# ---------------------------------------------------------------
+def get_imu_state(df, imu_name: str, frame: int):
     """
-    Get one ESTFILTER data packet and extract 9-axis data + quaternion.
-
-    Parameters
-    ----------
-    imu : MicroStrainIMU
-
-    Returns
-    -------
-    data_1_to_9 : np.ndarray, shape (9,)
-        Usually [acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, mag_x, mag_y, mag_z].
-    quat_rot : Rotation
-        IMU orientation as a Rotation object with scalar-first convention [w, x, y, z].
+    imu_name: "pelvis", "thigh_r", "shank_r", "thigh_l", "shank_l"
+    frame: row index
+    
+    Returns:
+        R_quat      (Rotation object)
+        accel       np.array([ax, ay, az])
+        mag         np.array([mx, my, mz])
     """
-    data = imu.get_ESTFILTER_data(20, 0)
 
-    quat = np.array(
-        [
-            data[10].as_floatAt(0),
-            data[10].as_floatAt(1),
-            data[10].as_floatAt(2),
-            data[10].as_floatAt(3),
-        ]
-    )
+    # -------- Parse quaternion safely --------
+    quat_raw = df[f"{imu_name}_est_quat"].iloc[frame]
+    quat = parse_quat(quat_raw)
+    R_quat = R.from_quat(quat, scalar_first=True)
 
-    # MicroStrain: we are treating this as [w, x, y, z]
-    quat_rot = R.from_quat(quat, scalar_first=True)
+    # -------- Acceleration --------
+    accel = np.array([
+        float(df[f"{imu_name}_accel_x"].iloc[frame]) * 9.80665,
+        float(df[f"{imu_name}_accel_y"].iloc[frame]) * 9.80665,
+        float(df[f"{imu_name}_accel_z"].iloc[frame]) * 9.80665,
+    ])
 
-    return np.array(data[1:10]), quat_rot
+    # -------- Magnetometer --------
+    mag = np.array([
+        float(df[f"{imu_name}_mag_x"].iloc[frame]),
+        float(df[f"{imu_name}_mag_y"].iloc[frame]),
+        float(df[f"{imu_name}_mag_z"].iloc[frame]),
+    ])
 
-
-def get_microstrain_acc_gyro_mag(
-    data_1_to_9: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Split the 9-element MicroStrain data array into accel, gyro, mag.
-
-    Parameters
-    ----------
-    data_1_to_9 : np.ndarray, shape (9,)
-        [acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, mag_x, mag_y, mag_z]
-
-    Returns
-    -------
-    acc_b : np.ndarray, shape (3,)
-        Linear acceleration in m/s^2 in IMU frame.
-    gyro_b : np.ndarray, shape (3,)
-        Angular velocity in rad/s (or deg/s depending on MicroStrain config).
-    mag_b : np.ndarray, shape (3,)
-        Magnetometer vector in IMU frame.
-    """
-    acc_b = data_1_to_9[0:3] * 9.80665
-    gyro_b = data_1_to_9[3:6]
-    mag_b = data_1_to_9[6:9]
-    return acc_b, gyro_b, mag_b
-
-
-def get_microstrain_quat(imu: MicroStrainIMU) -> R:
-    """
-    Get only the quaternion from the MicroStrain ESTFILTER packet.
-
-    Parameters
-    ----------
-    imu : MicroStrainIMU
-
-    Returns
-    -------
-    quat_rot : Rotation
-        Current orientation as Rotation object.
-    """
-    data = imu.get_ESTFILTER_data(20, 0)
-    quat = np.array(
-        [
-            data[10].as_floatAt(0),
-            data[10].as_floatAt(1),
-            data[10].as_floatAt(2),
-            data[10].as_floatAt(3),
-        ]
-    )
-    return R.from_quat(quat, scalar_first=True)
+    return R_quat, accel, mag
 
 # =============================================================================
 # Frame-construction / zeroing helpers
@@ -354,72 +355,56 @@ def main() -> int:
     TCP_IP = '192.168.0.1'
     
     # ---------------------------------------------------------------------
-    # 1. Sensor setup
+    # Load File and get a pandas dataframe
     # ---------------------------------------------------------------------
+    trial = input("Enter trial file name (e.g., trial2.csv): ").strip()
+    if not trial.endswith(".csv"):
+        trial += ".csv"
+    logs_root = os.path.join(os.getcwd(), "logs")
     
-    # Setup Microstrain IMU's
-    pelvis_imu = MicroStrainIMU("195772", 921600)
+    # --- Search for this file inside logs/ recursively ---
+    matches = []
+    for root, _, files in os.walk(logs_root):
+        if trial in files:
+            matches.append(os.path.join(root, trial))
 
-    shank_r_imu = MicroStrainIMU("195773", 921600)
-    thigh_r_imu = MicroStrainIMU("195778", 921600)
+    if not matches:
+        raise FileNotFoundError(f"'{trial}' not found in any folder inside logs/")
     
-    thigh_l_imu = MicroStrainIMU("195775", 921600)
-    shank_l_imu = MicroStrainIMU("", 921600)
-
-    try:
-        # Configure all MicroStrain IMUs for ESTFILTER streaming
-        for imu in [pelvis_imu, shank_r_imu, thigh_r_imu, thigh_l_imu, shank_l_imu]:
-            imu.configure_ESTFLTER_imu(sample_frequency)
-    except Exception as e:
-        report_error(e)
-        for imu in [pelvis_imu, shank_r_imu, thigh_r_imu, thigh_l_imu, shank_l_imu]:
-            imu.set_to_idle()
-        return 1
+    file_path = matches[0]
+    print(file_path)
     
-    
-    # Setup xsensor insoles and IMU's
-    xsensors = XSENSORS(num_xsensors = NUM_INSOLES)
-    xsensorConnection = xsensors.start_server(tcp_ip=TCP_IP, startup=True)    
+    # --- Load & print basic data ---
+    df = load_trial(file_path)
     
     # ---------------------------------------------------------------------
     # 2. Initial calibration: zero quats + compute anatomical frames
     # ---------------------------------------------------------------------
     
-    try:
-    
-        # Get Data from the imu and generate the anatomical frames
-        pelvis_imu_data, pelvis_quat_0 = get_microstrain_imu_data(pelvis_imu)
-        pelvis_acc, pelvis_gyro, pelvis_mag = get_microstrain_acc_gyro_mag(pelvis_imu_data)
-        R_pelvis_anatomical = compute_imu_to_world_transform(pelvis_acc, pelvis_mag)
-    
-        thigh_r_imu_data, thigh_r_quat_0 = get_microstrain_imu_data(thigh_r_imu)
-        thigh_r_acc, thigh_r_gyro, thigh_r_mag = get_microstrain_acc_gyro_mag(thigh_r_imu_data)
-        R_thigh_r_anatomical = compute_imu_to_world_transform(thigh_r_acc, thigh_r_mag)   
-        
-        shank_r_imu_data, shank_r_quat_0  = get_microstrain_imu_data(shank_r_imu)
-        shank_r_acc, shank_r_gyro, shank_r_mag = get_microstrain_acc_gyro_mag(shank_r_imu_data)
-        R_shank_r_anatomical = compute_imu_to_world_transform(shank_r_acc, shank_r_mag)   
+    # Get Data from the imu and generate the anatomical frames
+    pelvis_quat_0, pelvis_acc, pelvis_mag = get_imu_state(df, "pelvis", START_FRAME) 
+    R_pelvis_anatomical = compute_imu_to_world_transform(pelvis_acc, pelvis_mag)
 
-        thigh_l_imu_data, thigh_l_quat_0 = get_microstrain_imu_data(thigh_l_imu)
-        thigh_l_acc, thigh_l_gyro, thigh_l_mag = get_microstrain_acc_gyro_mag(thigh_l_imu_data)
-        R_thigh_l_anatomical = compute_imu_to_world_transform(thigh_l_acc, thigh_l_mag)   
+    thigh_r_quat_0, thigh_r_acc, thigh_r_mag = get_imu_state(df, "thigh_r", START_FRAME) 
+    R_thigh_r_anatomical = compute_imu_to_world_transform(thigh_r_acc, thigh_r_mag)
+    
+    shank_r_quat_0, shank_r_acc, shank_r_mag = get_imu_state(df, "shank_r", START_FRAME) 
+    R_shank_r_anatomical = compute_imu_to_world_transform(shank_r_acc, shank_r_mag)
+    
+    thigh_l_quat_0, thigh_l_acc, thigh_l_mag = get_imu_state(df, "thigh_l", START_FRAME) 
+    R_thigh_l_anatomical = compute_imu_to_world_transform(thigh_l_acc, thigh_l_mag)
+    
+    shank_l_quat_0, shank_l_acc, shank_l_mag = get_imu_state(df, "shank_l", START_FRAME) 
+    R_shank_l_anatomical = compute_imu_to_world_transform(shank_l_acc, shank_l_mag)
+                
+                
+    foot_r_quat_0, foot_r_acc_0 = get_insole_state(df, "R", START_FRAME)
+    foot_l_quat_0, foot_l_acc_0 = get_insole_state(df, "L", START_FRAME)
+    
+    foot_r_anatomical = compute_imu_to_world_transform(acc_b=foot_r_acc_0, pelvis_R_anatomical=R_pelvis_anatomical)
+    foot_l_anatomical = compute_imu_to_world_transform(acc_b=foot_l_acc_0, pelvis_R_anatomical=R_pelvis_anatomical, left_foot=True)
+    
         
-        shank_l_imu_data, shank_l_quat_0  = get_microstrain_imu_data(shank_l_imu)
-        shank_l_acc, shank_l_gyro, shank_l_mag = get_microstrain_acc_gyro_mag(shank_l_imu_data)
-        R_shank_l_anatomical = compute_imu_to_world_transform(shank_l_acc, shank_l_mag)   
-        
-        foot_l_quat_0, foot_l_acc_0, foot_r_quat_0, foot_r_acc_0 = get_insole_data(xsensors=xsensors)
-        
-        foot_l_anatomical = compute_imu_to_world_transform(acc_b=foot_l_acc_0, pelvis_R_anatomical=R_pelvis_anatomical, left_foot=True)
-        foot_r_anatomical = compute_imu_to_world_transform(acc_b=foot_r_acc_0, pelvis_R_anatomical=R_pelvis_anatomical)
-        
-    except Exception as e:
-        report_error(e)
-        # Put all sensors to idle and bail
-        for imu in [pelvis_imu, shank_r_imu, thigh_r_imu, thigh_l_imu, shank_l_imu]:
-            imu.set_to_idle()
-        xsensors.close_server()
-        return 1
     # ---------------------------------------------------------------------
     # 3. Nimble world & GUI setup
     # ---------------------------------------------------------------------
@@ -478,189 +463,164 @@ def main() -> int:
     # Foot mounting correction (XSENSOR vs shank frame)
     # This is your "jerry-rig" to align insole IMU to shank anatomical frame.
     R_mount = R.from_euler("xyz", [0.0, 180.0, 0.0], degrees=True)
-
+    
     # Simple rate limiter
     t_prev = time.perf_counter()
 
     # ---------------------------------------------------------------------
     # 4. Main streaming loop
     # ---------------------------------------------------------------------
-    try:
-        while True:
-            
-            
-            # -------------------------------------------------------------
-            # 4.1 Read all current quats from IMUs & insoles
-            # -------------------------------------------------------------
-            pelvis_quat = get_microstrain_quat(pelvis_imu)
-            thigh_r_quat = get_microstrain_quat(thigh_r_imu)
-            shank_r_quat = get_microstrain_quat(shank_r_imu)
-            thigh_l_quat = get_microstrain_quat(thigh_l_imu)
-            shank_l_quat = get_microstrain_quat(shank_l_imu)
-
-            foot_l_quat, foot_l_acc, foot_r_quat, foot_r_acc = get_insole_data(
-                xsensors=xsensors
-            )
-
-            # -------------------------------------------------------------
-            # 4.2 Zero frames w.r.t. initial quaternions
-            #     q_zeroed = q0^{-1} * q
-            # -------------------------------------------------------------
-            pelvis_quat_zeroed = pelvis_quat_0.inv() * pelvis_quat
-            thigh_r_quat_zeroed = thigh_r_quat_0.inv() * thigh_r_quat
-            shank_r_quat_zeroed = shank_r_quat_0.inv() * shank_r_quat
-            thigh_l_quat_zeroed = thigh_l_quat_0.inv() * thigh_l_quat
-            shank_l_quat_zeroed = shank_l_quat_0.inv() * shank_l_quat
-
-            foot_l_quat_zeroed = foot_l_quat_0.inv() * foot_l_quat
-            foot_r_quat_zeroed = foot_r_quat_0.inv() * foot_r_quat
-
-            # -------------------------------------------------------------
-            # 4.3 Change reference frame to anatomical frame:
-            #
-            #     q_anat = R_anat^{-1} * q_zeroed * R_anat
-            #
-            # This is a similarity transform that re-expresses the rotation
-            # in the anatomical frame instead of sensor frame.
-            # -------------------------------------------------------------
-            pelvis_quat_joint_frame = (
-                R_pelvis_anatomical.inv() * pelvis_quat_zeroed * R_pelvis_anatomical
-            )
-            thigh_r_quat_joint_frame = (
-                R_thigh_r_anatomical.inv()
-                * thigh_r_quat_zeroed
-                * R_thigh_r_anatomical
-            )
-            shank_r_quat_joint_frame = (
-                R_shank_r_anatomical.inv()
-                * shank_r_quat_zeroed
-                * R_shank_r_anatomical
-            )
-            thigh_l_quat_joint_frame = (
-                R_thigh_l_anatomical.inv()
-                * thigh_l_quat_zeroed
-                * R_thigh_l_anatomical
-            )
-            shank_l_quat_joint_frame = (
-                R_shank_l_anatomical.inv()
-                * shank_l_quat_zeroed
-                * R_shank_l_anatomical
-            )
-
-            # foot are expressed using shank anatomical frames plus R_mount
-            foot_l_quat_joint_frame = (
-                R_mount.inv()
-                * R_shank_l_anatomical.inv()
-                * foot_l_quat_zeroed
-                * R_shank_l_anatomical
-                * R_mount
-            )
-            foot_r_quat_joint_frame = (
-                R_mount.inv()
-                * R_shank_r_anatomical.inv()
-                * foot_r_quat_zeroed
-                * R_shank_r_anatomical
-                * R_mount
-            )
-            
-            # -------------------------------------------------------------
-            # 4.4 Joint-relative rotations:
-            #
-            #     q_child_rel = q_parent^{-1} * q_child
-            # -------------------------------------------------------------
-            thigh_r_quat_rel = pelvis_quat_joint_frame.inv() * thigh_r_quat_joint_frame
-            shank_r_quat_rel = thigh_r_quat_joint_frame.inv() * shank_r_quat_joint_frame
-
-            thigh_l_quat_rel = pelvis_quat_joint_frame.inv() * thigh_l_quat_joint_frame
-            shank_l_quat_rel = thigh_l_quat_joint_frame.inv() * shank_l_quat_joint_frame
-
-            foot_r_quat_rel = shank_r_quat_joint_frame.inv() * foot_r_quat_joint_frame
-            foot_l_quat_rel = shank_l_quat_joint_frame.inv() * foot_l_quat_joint_frame
-
-            # -------------------------------------------------------------
-            # 4.5 Axis-angle for each joint
-            # -------------------------------------------------------------
-            pelvis_axis, pelvis_theta = safe_axis_angle(
-                pelvis_quat_joint_frame.as_rotvec()
-            )
-            thigh_r_axis, thigh_r_theta = safe_axis_angle(thigh_r_quat_rel.as_rotvec())
-            shank_r_axis, shank_r_theta = safe_axis_angle(shank_r_quat_rel.as_rotvec())
-            thigh_l_axis, thigh_l_theta = safe_axis_angle(thigh_l_quat_rel.as_rotvec())
-            shank_l_axis, shank_l_theta = safe_axis_angle(shank_l_quat_rel.as_rotvec())
-
-            foot_l_axis, foot_l_theta = safe_axis_angle(foot_l_quat_rel.as_rotvec())
-            foot_r_axis, foot_r_theta = safe_axis_angle(foot_r_quat_rel.as_rotvec())
-
-            # Optional debug print for right foot joint
-            if DEBUG_PRINT:
-                axis_dbg, theta_dbg = safe_axis_angle(foot_r_quat_rel.as_rotvec())
-                print(
-                    "Axis-Angle(deg about X,Y,Z):",
-                    np.degrees(axis_dbg * theta_dbg),
-                )
-                
-                
-            # -------------------------------------------------------------
-            # 4.6 Map axis-angle onto Rajagopal joint DOFs
-            #
-            #     angle_dof = (joint_axis · rot_axis) * rot_angle
-            #
-            # NOTE: pos indices (0..19) must match the Rajagopal DOF ordering.
-            # -------------------------------------------------------------
-            
-            # Compute joint angles
-            pos = skeleton.getPositions()
-            
-            # pelvis
-            pos[0] = np.dot(pelvis_axis, joint_axes["pelvis_z"]) * pelvis_theta
-            pos[1] = np.dot(pelvis_axis, joint_axes["pelvis_x"]) * pelvis_theta
-            pos[2] = np.dot(pelvis_axis, joint_axes["pelvis_y"]) * pelvis_theta
-            
-            # Right Side
-            pos[6] = np.dot(thigh_r_axis, joint_axes["hip_z"]) * thigh_r_theta
-            pos[7] = np.dot(thigh_r_axis, joint_axes["hip_x"]) * thigh_r_theta
-            pos[8] = np.dot(thigh_r_axis, joint_axes["hip_y"]) * thigh_r_theta
-            pos[9] = np.dot(shank_r_axis, joint_axes["r_knee"]) * shank_r_theta
-            pos[10] = np.dot(foot_r_axis, joint_axes["ankle_z"]) * foot_r_theta  # ankle angle_r
-            pos[11] = np.dot(foot_r_axis, joint_axes["r_ankle_x"]) * foot_r_theta  # subtalar_angle_r
-            # # pos[12] = np.dot(foot_l_axis,  np.array([1, 0, 0])) * foot_l_theta  # mtp_angle_r
-           
-                                    
-            # Left Side
-            pos[13] = np.dot(thigh_l_axis, joint_axes["hip_z"]) * thigh_l_theta
-            pos[14] = np.dot(thigh_l_axis, joint_axes["l_hip_x"]) * thigh_l_theta
-            pos[15] = np.dot(thigh_l_axis, joint_axes["l_hip_y"]) * thigh_l_theta
-            pos[16] = np.dot(shank_l_axis, joint_axes["l_knee"]) * shank_l_theta
-            pos[17] = np.dot(foot_l_axis, joint_axes["ankle_z"]) * foot_l_theta  # ankle angle_l
-            pos[18] = np.dot(foot_l_axis, joint_axes["l_ankle_x"]) * foot_l_theta  # subtalar_angle_l
-            # # pos[19] = np.dot(foot_l_axis,  np.array([1, 0, 0])) * foot_l_theta  # mtp_angle_l - toe movement - not used - we dont capture it only
-            
+    for FRAME in range(START_FRAME+1, df.shape[1]):
         
-            skeleton.setPositions(pos)
-
-            gui.nativeAPI().renderWorld(world)
+        
+        # -------------------------------------------------------------
+        # 4.1 Read all current quats from IMUs & insoles
+        # -------------------------------------------------------------
+        pelvis_quat, _, _ = get_imu_state(df, "pelvis", FRAME)
+        thigh_r_quat, _, _ = get_imu_state(df, "thigh_r", FRAME)
+        shank_r_quat, _, _ = get_imu_state(df, "shank_r", FRAME)
+        thigh_l_quat, _, _ = get_imu_state(df, "thigh_l", FRAME)
+        shank_l_quat, _, _ = get_imu_state(df, "shank_l", FRAME)
+        foot_r_quat, _ = get_insole_state(df, "R", FRAME)
+        foot_l_quat, _ = get_insole_state(df, "L", FRAME)
+        
+        # -------------------------------------------------------------
+        # 4.2 Zero frames w.r.t. initial quaternions
+        #     q_zeroed = q0^{-1} * q
+        # -------------------------------------------------------------
+        pelvis_quat_zeroed = pelvis_quat_0.inv() * pelvis_quat
+        thigh_r_quat_zeroed = thigh_r_quat_0.inv() * thigh_r_quat
+        shank_r_quat_zeroed = shank_r_quat_0.inv() * shank_r_quat
+        thigh_l_quat_zeroed = thigh_l_quat_0.inv() * thigh_l_quat
+        shank_l_quat_zeroed = shank_l_quat_0.inv() * shank_l_quat
+        foot_l_quat_zeroed = foot_l_quat_0.inv() * foot_l_quat
+        foot_r_quat_zeroed = foot_r_quat_0.inv() * foot_r_quat
+        # -------------------------------------------------------------
+        # 4.3 Change reference frame to anatomical frame:
+        #
+        #     q_anat = R_anat^{-1} * q_zeroed * R_anat
+        #
+        # This is a similarity transform that re-expresses the rotation
+        # in the anatomical frame instead of sensor frame.
+        # -------------------------------------------------------------
+        pelvis_quat_joint_frame = (
+            R_pelvis_anatomical.inv() * pelvis_quat_zeroed * R_pelvis_anatomical
+        )
+        thigh_r_quat_joint_frame = (
+            R_thigh_r_anatomical.inv()
+            * thigh_r_quat_zeroed
+            * R_thigh_r_anatomical
+        )
+        shank_r_quat_joint_frame = (
+            R_shank_r_anatomical.inv()
+            * shank_r_quat_zeroed
+            * R_shank_r_anatomical
+        )
+        thigh_l_quat_joint_frame = (
+            R_thigh_l_anatomical.inv()
+            * thigh_l_quat_zeroed
+            * R_thigh_l_anatomical
+        )
+        shank_l_quat_joint_frame = (
+            R_shank_l_anatomical.inv()
+            * shank_l_quat_zeroed
+            * R_shank_l_anatomical
+        )
+        # foot are expressed using shank anatomical frames plus R_mount
+        foot_l_quat_joint_frame = (
+            R_mount.inv()
+            * R_shank_l_anatomical.inv()
+            * foot_l_quat_zeroed
+            * R_shank_l_anatomical
+            * R_mount
+        )
+        foot_r_quat_joint_frame = (
+            R_mount.inv()
+            * R_shank_r_anatomical.inv()
+            * foot_r_quat_zeroed
+            * R_shank_r_anatomical
+            * R_mount
+        )
+        
+        # -------------------------------------------------------------
+        # 4.4 Joint-relative rotations:
+        #
+        #     q_child_rel = q_parent^{-1} * q_child
+        # -------------------------------------------------------------
+        thigh_r_quat_rel = pelvis_quat_joint_frame.inv() * thigh_r_quat_joint_frame
+        shank_r_quat_rel = thigh_r_quat_joint_frame.inv() * shank_r_quat_joint_frame
+        thigh_l_quat_rel = pelvis_quat_joint_frame.inv() * thigh_l_quat_joint_frame
+        shank_l_quat_rel = thigh_l_quat_joint_frame.inv() * shank_l_quat_joint_frame
+        foot_r_quat_rel = shank_r_quat_joint_frame.inv() * foot_r_quat_joint_frame
+        foot_l_quat_rel = shank_l_quat_joint_frame.inv() * foot_l_quat_joint_frame
+        # -------------------------------------------------------------
+        # 4.5 Axis-angle for each joint
+        # -------------------------------------------------------------
+        pelvis_axis, pelvis_theta = safe_axis_angle(
+            pelvis_quat_joint_frame.as_rotvec()
+        )
+        thigh_r_axis, thigh_r_theta = safe_axis_angle(thigh_r_quat_rel.as_rotvec())
+        shank_r_axis, shank_r_theta = safe_axis_angle(shank_r_quat_rel.as_rotvec())
+        thigh_l_axis, thigh_l_theta = safe_axis_angle(thigh_l_quat_rel.as_rotvec())
+        shank_l_axis, shank_l_theta = safe_axis_angle(shank_l_quat_rel.as_rotvec())
+        foot_l_axis, foot_l_theta = safe_axis_angle(foot_l_quat_rel.as_rotvec())
+        foot_r_axis, foot_r_theta = safe_axis_angle(foot_r_quat_rel.as_rotvec())
+        # Optional debug print for right foot joint
+        if DEBUG_PRINT:
+            axis_dbg, theta_dbg = safe_axis_angle(foot_r_quat_rel.as_rotvec())
+            print(
+                "Axis-Angle(deg about X,Y,Z):",
+                np.degrees(axis_dbg * theta_dbg),
+            )
             
             
-            # -------------------------------------------------------------
-            # 4.7 Rate limiting to ~SAMPLE_FREQUENCY
-            # -------------------------------------------------------------
-            elapsed = time.perf_counter() - t_prev
-            sleep_time = (1.0 / sample_frequency) - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            t_prev = time.perf_counter()
-
-            
-    except KeyboardInterrupt:
-        print("\nTerminated by user.")
-    except Exception as e:
-        report_error(e)
-    finally:
-        print("Ending stream.")
-        # Make sure everything is safely idled/closed
-        for imu in [pelvis_imu, shank_r_imu, thigh_r_imu, thigh_l_imu, shank_l_imu]:
-            imu.set_to_idle()
-        xsensors.close_server()
+        # -------------------------------------------------------------
+        # 4.6 Map axis-angle onto Rajagopal joint DOFs
+        #
+        #     angle_dof = (joint_axis · rot_axis) * rot_angle
+        #
+        # NOTE: pos indices (0..19) must match the Rajagopal DOF ordering.
+        # -------------------------------------------------------------
+        
+        # Compute joint angles
+        pos = skeleton.getPositions()
+        
+        # pelvis
+        pos[0] = np.dot(pelvis_axis, joint_axes["pelvis_z"]) * pelvis_theta
+        pos[1] = np.dot(pelvis_axis, joint_axes["pelvis_x"]) * pelvis_theta
+        pos[2] = np.dot(pelvis_axis, joint_axes["pelvis_y"]) * pelvis_theta
+        
+        # Right Side
+        pos[6] = np.dot(thigh_r_axis, joint_axes["hip_z"]) * thigh_r_theta
+        pos[7] = np.dot(thigh_r_axis, joint_axes["hip_x"]) * thigh_r_theta
+        pos[8] = np.dot(thigh_r_axis, joint_axes["hip_y"]) * thigh_r_theta
+        pos[9] = np.dot(shank_r_axis, joint_axes["r_knee"]) * shank_r_theta
+        pos[10] = np.dot(foot_r_axis, joint_axes["ankle_z"]) * foot_r_theta  # ankle angle_r
+        pos[11] = np.dot(foot_r_axis, joint_axes["r_ankle_x"]) * foot_r_theta  # subtalar_angle_r
+        # # pos[12] = np.dot(foot_l_axis,  np.array([1, 0, 0])) * foot_l_theta  # mtp_angle_r
+       
+                                
+        # Left Side
+        pos[13] = np.dot(thigh_l_axis, joint_axes["hip_z"]) * thigh_l_theta
+        pos[14] = np.dot(thigh_l_axis, joint_axes["l_hip_x"]) * thigh_l_theta
+        pos[15] = np.dot(thigh_l_axis, joint_axes["l_hip_y"]) * thigh_l_theta
+        pos[16] = np.dot(shank_l_axis, joint_axes["l_knee"]) * shank_l_theta
+        pos[17] = np.dot(foot_l_axis, joint_axes["ankle_z"]) * foot_l_theta  # ankle angle_l
+        pos[18] = np.dot(foot_l_axis, joint_axes["l_ankle_x"]) * foot_l_theta  # subtalar_angle_l
+        # # pos[19] = np.dot(foot_l_axis,  np.array([1, 0, 0])) * foot_l_theta  # mtp_angle_l - toe movement - not used - we dont capture it only
+        
+    
+        skeleton.setPositions(pos)
+        gui.nativeAPI().renderWorld(world)
+        
+        # -------------------------------------------------------------
+        # 4.7 Rate limiting to ~SAMPLE_FREQUENCY
+        # -------------------------------------------------------------
+        elapsed = time.perf_counter() - t_prev
+        sleep_time = (1.0 / sample_frequency) - elapsed
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        t_prev = time.perf_counter()        
 
     return 0
 
