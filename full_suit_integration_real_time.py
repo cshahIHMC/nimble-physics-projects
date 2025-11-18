@@ -644,7 +644,7 @@ def main() -> int:
             # 4.7 Rate limiting to ~SAMPLE_FREQUENCY
             # -------------------------------------------------------------
             elapsed = time.perf_counter() - t_prev
-            sleep_time = (1.0 / SAMPLE_FREQUENCY) - elapsed
+            sleep_time = (1.0 / sample_frequency) - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
             t_prev = time.perf_counter()
