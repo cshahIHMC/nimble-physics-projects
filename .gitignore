@@ -1,3 +1,5 @@
 # Ignore all the files in the pycache folder
 __pycache__/
 *.pyc
+
+logs/
