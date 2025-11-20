@@ -57,12 +57,25 @@ import pandas as pd
 
 DEBUG_PRINT = False
 START_FRAME = 20
+USE_XSENSOR_INSOLE = False
+
 IMU_NAME_MAP = {
     1: "pelvis",
     2: "thigh_r",
     3: "shank_r",
     4: "thigh_l",
     5: "shank_l",
+}
+
+if USE_XSENSOR_INSOLE is False:
+    IMU_NAME_MAP = {
+    1: "pelvis",
+    2: "thigh_r",
+    3: "shank_r",
+    4: "thigh_l",
+    5: "shank_l",
+    6: "foot_r",
+    7: "foot_l"
 }
 
 IMU_FIELDS = [
@@ -397,13 +410,22 @@ def main() -> int:
     shank_l_quat_0, shank_l_acc, shank_l_mag = get_imu_state(df, "shank_l", START_FRAME) 
     R_shank_l_anatomical = compute_imu_to_world_transform(shank_l_acc, shank_l_mag)
                 
+    
+    if USE_XSENSOR_INSOLE:
+        foot_r_quat_0, foot_r_acc_0 = get_insole_state(df, "R", START_FRAME)
+        foot_l_quat_0, foot_l_acc_0 = get_insole_state(df, "L", START_FRAME)
+
+        R_foot_r_anatomical = compute_imu_to_world_transform(acc_b=foot_r_acc_0, pelvis_R_anatomical=R_pelvis_anatomical)
+        R_foot_l_anatomical = compute_imu_to_world_transform(acc_b=foot_l_acc_0, pelvis_R_anatomical=R_pelvis_anatomical, left_foot=True)
+    else:
+        
+        foot_r_quat_0, foot_r_acc, foot_r_mag = get_imu_state(df, "foot_r", START_FRAME) 
+        R_foot_r_anatomical = compute_imu_to_world_transform(foot_r_acc, foot_r_mag)
+    
+        
+        foot_l_quat_0, foot_l_acc, foot_l_mag = get_imu_state(df, "foot_l", START_FRAME) 
+        R_foot_l_anatomical = compute_imu_to_world_transform(foot_l_acc, foot_l_mag)
                 
-    foot_r_quat_0, foot_r_acc_0 = get_insole_state(df, "R", START_FRAME)
-    foot_l_quat_0, foot_l_acc_0 = get_insole_state(df, "L", START_FRAME)
-    
-    foot_r_anatomical = compute_imu_to_world_transform(acc_b=foot_r_acc_0, pelvis_R_anatomical=R_pelvis_anatomical)
-    foot_l_anatomical = compute_imu_to_world_transform(acc_b=foot_l_acc_0, pelvis_R_anatomical=R_pelvis_anatomical, left_foot=True)
-    
         
     # ---------------------------------------------------------------------
     # 3. Nimble world & GUI setup
@@ -481,8 +503,14 @@ def main() -> int:
         shank_r_quat, _, _ = get_imu_state(df, "shank_r", FRAME)
         thigh_l_quat, _, _ = get_imu_state(df, "thigh_l", FRAME)
         shank_l_quat, _, _ = get_imu_state(df, "shank_l", FRAME)
-        foot_r_quat, _ = get_insole_state(df, "R", FRAME)
-        foot_l_quat, _ = get_insole_state(df, "L", FRAME)
+        
+        if USE_XSENSOR_INSOLE:
+            foot_r_quat, _ = get_insole_state(df, "R", FRAME)
+            foot_l_quat, _ = get_insole_state(df, "L", FRAME)
+        else:
+            foot_r_quat, _ = get_imu_state(df, "foot_r", FRAME)
+            foot_l_quat, _ = get_imu_state(df, "foot_l", FRAME)
+            
         
         # -------------------------------------------------------------
         # 4.2 Zero frames w.r.t. initial quaternions
@@ -527,20 +555,33 @@ def main() -> int:
             * R_shank_l_anatomical
         )
         # foot are expressed using shank anatomical frames plus R_mount
-        foot_l_quat_joint_frame = (
-            R_mount.inv()
-            * R_shank_l_anatomical.inv()
-            * foot_l_quat_zeroed
-            * R_shank_l_anatomical
-            * R_mount
-        )
-        foot_r_quat_joint_frame = (
-            R_mount.inv()
-            * R_shank_r_anatomical.inv()
-            * foot_r_quat_zeroed
-            * R_shank_r_anatomical
-            * R_mount
-        )
+        if USE_XSENSOR_INSOLE:
+            foot_l_quat_joint_frame = (
+                R_mount.inv()
+                * R_shank_l_anatomical.inv()
+                * foot_l_quat_zeroed
+                * R_shank_l_anatomical
+                * R_mount
+            )
+            foot_r_quat_joint_frame = (
+                R_mount.inv()
+                * R_shank_r_anatomical.inv()
+                * foot_r_quat_zeroed
+                * R_shank_r_anatomical
+                * R_mount
+            )
+        else:
+            foot_l_quat_joint_frame = (
+                R_foot_l_anatomical.inv()
+                * foot_l_quat_zeroed
+                * R_foot_l_anatomical
+            )
+            foot_r_quat_joint_frame = (
+                R_foot_r_anatomical.inv()
+                * foot_r_quat_zeroed
+                * R_foot_r_anatomical
+            )
+            
         
         # -------------------------------------------------------------
         # 4.4 Joint-relative rotations:
