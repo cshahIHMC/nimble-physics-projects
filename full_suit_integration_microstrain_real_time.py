@@ -279,11 +279,11 @@ def main():
 
     thigh_r_imu = MicroStrainIMU("195778", 921600)
     shank_r_imu = MicroStrainIMU("195773", 921600)
-    foot_r_imu =  MicroStrainIMU("", 921600)
+    foot_r_imu =  MicroStrainIMU("195782", 921600)
     
     thigh_l_imu = MicroStrainIMU("195775", 921600)
     shank_l_imu = MicroStrainIMU("196864", 921600)
-    foot_l_imu = MicroStrainIMU("", 921600)
+    foot_l_imu = MicroStrainIMU("196867", 921600)
     
     all_imus = [
         pelvis_imu,

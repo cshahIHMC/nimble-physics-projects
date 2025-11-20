@@ -492,7 +492,7 @@ def main() -> int:
     # ---------------------------------------------------------------------
     # 4. Main streaming loop
     # ---------------------------------------------------------------------
-    for FRAME in range(START_FRAME+1, df.shape[1]):
+    for FRAME in range(START_FRAME+1, df.shape[0]):
         
         
         # -------------------------------------------------------------
@@ -508,8 +508,8 @@ def main() -> int:
             foot_r_quat, _ = get_insole_state(df, "R", FRAME)
             foot_l_quat, _ = get_insole_state(df, "L", FRAME)
         else:
-            foot_r_quat, _ = get_imu_state(df, "foot_r", FRAME)
-            foot_l_quat, _ = get_imu_state(df, "foot_l", FRAME)
+            foot_r_quat, _, _ = get_imu_state(df, "foot_r", FRAME)
+            foot_l_quat, _, _  = get_imu_state(df, "foot_l", FRAME)
             
         
         # -------------------------------------------------------------
